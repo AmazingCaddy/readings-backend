@@ -116,6 +116,7 @@ const sidebars = {
         'collaboration/async-result-return',
         'collaboration/worker-mq-consumption',
         'collaboration/order-flow-collaboration',
+        'collaboration/order-inventory-payment-saga',
       ],
     },
     {
