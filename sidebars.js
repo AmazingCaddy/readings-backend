@@ -68,6 +68,13 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: '工程配方',
+      items: [
+        'recipes/redis-key-design',
+      ],
+    },
+    {
+      type: 'category',
       label: '系统设计与项目实践',
       items: [
         'system-design/glossary',
