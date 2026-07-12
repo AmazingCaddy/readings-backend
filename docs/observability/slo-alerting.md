@@ -9,6 +9,17 @@ import TabItem from '@theme/TabItem';
 
 SLO 用用户体验定义可靠性目标，告警应该围绕用户影响触发，而不是围绕每一个低层指标噪声触发。好的告警能让工程师在用户明显受影响前介入，差的告警只会制造疲劳。
 
+## 先理解这些概念
+
+- **SLI**：衡量用户体验的指标，比如成功率、延迟、数据新鲜度。
+- **SLO**：服务目标，比如 99.9% 请求在 800ms 内成功。
+- **错误预算**：SLO 允许失败的那一小部分额度。
+- **Burn rate**：错误预算消耗速度，烧得太快就要告警。
+- **Page**：立即通知值班工程师处理的高优先级告警。
+- **Runbook**：告警后的排查和处理步骤说明。
+
+读这篇时先记住：告警不是为了发现所有异常，而是为了让需要人立刻处理的用户影响被及时发现。
+
 ```mermaid
 flowchart TD
     A[SLI: availability / latency] --> B[SLO target]
@@ -191,6 +202,18 @@ sequenceDiagram
 - Page 告警是否只针对需要立即行动的问题？
 - 每个告警是否有 runbook 和 dashboard 链接？
 - 是否定期复盘告警噪声和漏报？
+
+## 这篇文章在系统里怎么用
+
+SLO 适合定义核心用户路径的可靠性，比如登录、下单、支付、查询订单。系统设计时，可以用 SLO 表达“这个系统做到什么程度算可靠”。
+
+告警设计要围绕用户影响，而不是所有低层指标。CPU 高可以进 dashboard；订单创建成功率跌破 SLO、错误预算快速燃烧，才应该 page。
+
+## 术语回看
+
+- [SLI / SLO](../system-design/glossary.md#sli--slo)
+- [P99](../system-design/glossary.md#p99)
+- [削峰](../system-design/glossary.md#削峰)
 
 ## 延伸阅读
 
