@@ -72,6 +72,7 @@ const sidebars = {
       items: [
         'recipes/redis-key-design',
         'recipes/idempotency-key-design',
+        'recipes/database-index-design',
       ],
     },
     {
