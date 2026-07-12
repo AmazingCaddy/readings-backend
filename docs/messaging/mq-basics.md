@@ -9,6 +9,18 @@ import TabItem from '@theme/TabItem';
 
 消息队列用于解耦、削峰、异步化和跨服务事件传递。它把同步调用改成“生产者发送消息，消费者异步处理”，代价是引入延迟、重复消息、乱序、积压和最终一致性问题。
 
+## 先理解这些概念
+
+- **生产者 Producer**：发送消息的一方，比如订单服务发出 `OrderCreated`。
+- **消费者 Consumer**：处理消息的一方，比如库存服务消费订单创建事件。
+- **Topic / Queue**：消息存放的逻辑通道。
+- **Partition**：Topic 的分片，用来提升并行度，也影响消息顺序。
+- **Consumer Group**：同组消费者分摊消息，不同组各自消费一份。
+- **Ack / Offset**：消费者告诉 MQ“我处理到哪里了”。
+- **至少一次投递**：消息不会轻易丢，但可能重复，所以消费者要幂等。
+
+读这篇时先记住：MQ 把同步调用变成异步处理，但你必须接受重复、延迟、乱序和积压这些新问题。
+
 ```mermaid
 flowchart LR
     P[Producer] --> B[Broker / Topic]
@@ -188,6 +200,20 @@ flowchart LR
 - 是否有 schema version 和兼容策略？
 - 是否监控积压、消费延迟、失败率和 DLQ？
 - 关键消息是否使用 outbox 或等价可靠发布机制？
+
+## 这篇文章在系统里怎么用
+
+MQ 常用于订单创建后通知库存、搜索、通知、积分等下游。系统设计时，不能只说“用 MQ 解耦”，还要说明 topic 怎么划分、key 怎么选、consumer group 如何消费、失败如何重试、消费者如何幂等。
+
+MQ 的价值是削峰和解耦，但不是免费的：主链路变快了，下游一致性变成最终一致，问题会转移到重试、死信、积压和补偿上。
+
+## 术语回看
+
+- [削峰](../system-design/glossary.md#削峰)
+- [最终一致性](../system-design/glossary.md#最终一致性)
+- [幂等](../system-design/glossary.md#幂等)
+- [DLQ](../system-design/glossary.md#dlq)
+- [Outbox](../system-design/glossary.md#outbox)
 
 ## 延伸阅读
 
