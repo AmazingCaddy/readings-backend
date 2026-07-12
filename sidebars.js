@@ -68,6 +68,13 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: '后端经典算法',
+      items: [
+        'algorithms/snowflake-id',
+      ],
+    },
+    {
+      type: 'category',
       label: '工程配方',
       items: [
         'recipes/redis-key-design',
