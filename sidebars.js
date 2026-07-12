@@ -72,6 +72,7 @@ const sidebars = {
       items: [
         'system-design/order-system',
         'system-design/weibo-feed-system',
+        'system-design/train-ticket-system',
         'practice/high-concurrency-order-system',
       ],
     },
