@@ -196,6 +196,197 @@ stateDiagram-v2
 
 评论点赞系统要把“行为记录”和“展示计数”分开。点赞关系表用 `target + user_id` 唯一约束保证幂等，只有状态从未点赞变已点赞时才发 `+1` 事件；取消点赞只有从已点赞变未点赞时发 `-1`。计数通过 MQ 异步聚合，热点对象用分片计数或批量 flush，避免数据库单行热点。评论列表用 cursor 分页，缓存第一页和评论详情，删除或审核状态在读时二次校验。计数不准时靠离线重算和补偿任务修正。
 
+## 深挖：关系准确，计数最终一致
+
+### 业务边界和澄清问题
+
+评论点赞系统要先区分“行为事实”和“展示数字”。行为事实必须准确，展示数字可以短暂延迟。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 点赞对象是帖子、评论还是回复？ | 决定 target 模型 | `target_type + target_id` |
+| 点赞是否允许取消？ | 决定状态机 | `LIKED/UNLIKED` 而非只插入 |
+| 评论是否需要审核？ | 决定可见性状态 | 读时过滤和异步审核 |
+| 是否有热门评论？ | 决定读模型 | 热度排序和异步更新 |
+| 计数必须实时准确吗？ | 决定写路径 | 同步强一致或异步聚合 |
+
+可控边界：支持帖子评论、楼中楼回复、点赞/取消点赞、评论审核和删除；点赞关系准确，计数最终一致。
+
+### 容量估算
+
+假设社区业务：
+
+```text
+DAU：10,000,000
+发评论峰值：5,000 QPS
+点赞峰值：80,000 QPS
+热门帖子点赞峰值：20,000 QPS
+评论列表读取峰值：100,000 QPS
+```
+
+推导：
+
+- 点赞写入远高于评论写入，必须幂等且避免计数行热点。
+- 评论列表读远高于写，第一页和热门评论需要缓存。
+- 热门对象的点赞计数不能每次同步更新数据库同一行。
+- 离线重算是必要兜底，否则计数和关系迟早会漂移。
+
+### 表结构和索引
+
+评论表：
+
+```sql
+create table comments (
+  comment_id varchar(64) primary key,
+  target_type varchar(32) not null,
+  target_id varchar(64) not null,
+  parent_id varchar(64),
+  user_id varchar(64) not null,
+  content text not null,
+  status varchar(32) not null,
+  created_at timestamp not null
+);
+
+create index idx_comments_target_cursor
+on comments(target_type, target_id, created_at desc, comment_id desc);
+```
+
+点赞关系表：
+
+```sql
+create table likes (
+  target_type varchar(32) not null,
+  target_id varchar(64) not null,
+  user_id varchar(64) not null,
+  status varchar(32) not null,
+  updated_at timestamp not null,
+  primary key (target_type, target_id, user_id)
+);
+```
+
+计数表：
+
+```sql
+create table interaction_counters (
+  target_type varchar(32) not null,
+  target_id varchar(64) not null,
+  like_count bigint not null default 0,
+  comment_count bigint not null default 0,
+  updated_at timestamp not null,
+  primary key (target_type, target_id)
+);
+```
+
+### Redis Key 和事件
+
+```text
+comment:first_page:{target_type}:{target_id} -> first page comment ids
+comment:detail:{comment_id} -> comment snapshot
+counter:{target_type}:{target_id} -> like_count/comment_count snapshot
+counter:delta:{target_type}:{target_id}:shard:{0..31} -> pending delta
+like:state:{target_type}:{target_id}:{user_id} -> LIKED/UNLIKED
+```
+
+MQ Topic：
+
+```text
+interaction.comment.created
+interaction.comment.deleted
+interaction.like.changed
+interaction.counter.flush
+```
+
+点赞事件只发状态变化，不发重复请求：
+
+```json
+{
+  "eventId": "evt_1",
+  "targetType": "post",
+  "targetId": "p1001",
+  "userId": "u1",
+  "delta": 1
+}
+```
+
+### 点赞并发和计数聚合
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as Like API
+    participant DB as Like DB
+    participant MQ as MQ
+    participant C as Counter Worker
+
+    U->>API: like target
+    API->>DB: insert or update LIKED if current is not LIKED
+    alt state changed
+        API->>MQ: LikeChanged delta=+1
+        MQ-->>C: consume delta
+        C->>C: aggregate in shard buffer
+        C->>DB: flush counter delta in batch
+    else duplicate
+        API-->>U: return liked=true
+    end
+```
+
+计数 worker 可以每 1 秒或每 1000 条聚合一次，批量更新数据库：
+
+```sql
+update interaction_counters
+set like_count = like_count + ?, updated_at = now()
+where target_type = ? and target_id = ?;
+```
+
+### 评论删除和审核
+
+删除不要物理删除。读列表时必须校验状态：
+
+```mermaid
+flowchart TD
+    A[User deletes comment] --> B[Mark status HIDDEN]
+    B --> C[Publish CommentDeleted]
+    C --> D[Counter delta -1]
+    C --> E[Async clean first page cache]
+    B --> F[Read-time status filter]
+```
+
+审核可以先进入 `REVIEWING`，审核通过后变 `VISIBLE`，拒绝后变 `REJECTED`。是否先展示取决于业务风控要求。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| 用户重复点赞 | 计数重复加 | 关系表主键 + 状态变化才发 delta |
+| LikeChanged 重复消费 | 计数重复加 | event_id 去重或聚合幂等 |
+| 计数 worker 延迟 | 展示数字滞后 | 返回旧计数，监控 lag |
+| 评论已删但缓存仍显示 | 用户看到脏数据 | 读时查状态兜底，异步清缓存 |
+| 热门对象计数 key 过热 | Redis 单分片压力 | 分片 delta、本地聚合、限流 |
+| 计数长期不准 | 信任受损 | 按关系表离线重算修正 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 小规模 | 关系表 + 同步计数更新 |
+| 中规模 | MQ 异步计数、评论第一页缓存 |
+| 热点内容 | 计数分片、本地聚合、热门评论读模型 |
+| 风控加强 | 审核队列、反刷赞、黑名单、频率限制 |
+| 数据分析 | 明细进入 OLAP，支持互动趋势和推荐特征 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先说明行为记录准确，展示计数最终一致。
+2. 点赞关系用 `target_type + target_id + user_id` 主键防重复。
+3. 只有状态从未点赞变已点赞时才发 `+1`，取消点赞发 `-1`。
+4. 计数通过 MQ 异步聚合，热点对象用分片 delta 和批量 flush。
+5. 评论列表用 cursor 分页，缓存第一页和评论详情。
+6. 删除和审核通过状态字段表达，读取时过滤兜底。
+7. 计数不准靠离线重算修正。
+8. 监控点赞 QPS、计数 lag、热门 key、重复事件、审核积压。
+
 ## 术语回看
 
 - [幂等](./glossary.md#幂等)
