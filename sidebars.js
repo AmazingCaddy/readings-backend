@@ -77,6 +77,7 @@ const sidebars = {
         'recipes/outbox-table-design',
         'recipes/order-state-machine-design',
         'recipes/rate-limit-rule-design',
+        'recipes/metrics-alerting-design',
       ],
     },
     {
