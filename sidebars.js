@@ -87,6 +87,7 @@ const sidebars = {
         'collaboration/redis-database-consistency',
         'collaboration/database-mq-outbox',
         'collaboration/async-result-return',
+        'collaboration/worker-mq-consumption',
       ],
     },
     {
