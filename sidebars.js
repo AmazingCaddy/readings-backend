@@ -91,6 +91,7 @@ const sidebars = {
         'system-design/flash-sale-system',
         'system-design/payment-system',
         'system-design/short-url-system',
+        'system-design/comment-like-system',
         'practice/high-concurrency-order-system',
       ],
     },
