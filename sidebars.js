@@ -109,6 +109,7 @@ const sidebars = {
       items: [
         'collaboration/redis-database-consistency',
         'collaboration/read-write-splitting-cache',
+        'collaboration/cdc-search-index-sync',
         'collaboration/database-mq-outbox',
         'collaboration/async-result-return',
         'collaboration/worker-mq-consumption',
