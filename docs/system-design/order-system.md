@@ -212,6 +212,184 @@ flowchart TD
 
 这个设计不要求所有服务在一个分布式事务里提交，而是让订单服务维护权威状态，下游通过事件最终一致地跟进。失败可以通过幂等重试、outbox 重发、关单扫描和状态流水补偿恢复。
 
+## 深挖：订单系统怎么讲到项目级
+
+### 业务边界和澄清问题
+
+订单系统不是支付系统，也不是库存系统。它的核心职责是维护订单生命周期，并把库存、支付、履约这些外部变化收敛成订单状态。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 订单是实物、电商、票务还是虚拟商品？ | 履约状态不同 | 是否需要发货、出票、核销 |
+| 库存是订单服务内管，还是独立库存服务？ | 决定事务边界 | 本地事务或跨服务事件补偿 |
+| 是否允许拆单？ | 决定订单模型 | 主订单、子订单、履约单 |
+| 是否允许改价、优惠、退款？ | 决定金额模型 | 需要金额快照和调整流水 |
+| 支付超时多久关单？ | 决定关单任务 | `expire_at` 索引和条件更新 |
+
+一个面试可控边界：单商品订单，不做拆单，库存由库存服务预占，支付由支付系统回调，订单服务维护权威状态和事件发布。
+
+### 容量估算
+
+假设：
+
+```text
+日订单量：1,000,000
+创建订单峰值：3,000 QPS
+订单详情查询峰值：30,000 QPS
+待支付订单超时：15 分钟
+支付回调峰值：5,000 QPS
+下游消费者：库存、支付、履约、通知、搜索
+```
+
+推导：
+
+- 写入 QPS 不一定极高，但状态正确性要求高。
+- 查询 QPS 远高于写入，订单详情可以有读模型或短 TTL 缓存。
+- 关单扫描不能全表扫，要按 `status + expire_at` 建索引。
+- 订单事件会被多个系统消费，Outbox 和消费者幂等是基础设施。
+
+### 表结构、索引和事件
+
+订单表：
+
+```sql
+create table orders (
+  order_id varchar(64) primary key,
+  user_id varchar(64) not null,
+  sku_id varchar(64) not null,
+  quantity int not null,
+  amount_cents bigint not null,
+  status varchar(32) not null,
+  idempotency_key varchar(128) not null,
+  expire_at timestamp,
+  version int not null default 0,
+  created_at timestamp not null,
+  updated_at timestamp not null,
+  unique (user_id, idempotency_key)
+);
+
+create index idx_orders_user_created
+on orders(user_id, created_at desc, order_id desc);
+
+create index idx_orders_close_scan
+on orders(status, expire_at);
+```
+
+状态流水：
+
+```sql
+create table order_status_logs (
+  log_id varchar(64) primary key,
+  order_id varchar(64) not null,
+  from_status varchar(32),
+  to_status varchar(32) not null,
+  reason varchar(128) not null,
+  created_at timestamp not null
+);
+```
+
+Outbox：
+
+```sql
+create table outbox_events (
+  event_id varchar(64) primary key,
+  aggregate_type varchar(32) not null,
+  aggregate_id varchar(64) not null,
+  event_type varchar(64) not null,
+  payload text not null,
+  status varchar(32) not null,
+  created_at timestamp not null
+);
+```
+
+MQ Topic：
+
+```text
+order.created
+order.paid
+order.cancelled
+order.fulfilled
+order.refunded
+```
+
+### 状态推进和条件更新
+
+订单状态必须单向推进，不能让旧消息覆盖新状态。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created
+    Created --> PendingPayment
+    PendingPayment --> Paid: payment success
+    PendingPayment --> Cancelled: timeout or user cancel
+    Paid --> Fulfilling
+    Fulfilling --> Fulfilled
+    Paid --> RefundPending
+    RefundPending --> Refunded
+    Cancelled --> [*]
+    Fulfilled --> [*]
+    Refunded --> [*]
+```
+
+支付回调更新：
+
+```sql
+update orders
+set status = 'PAID', version = version + 1, updated_at = now()
+where order_id = ?
+  and status = 'PENDING_PAYMENT';
+```
+
+如果影响行数为 0，要查询当前状态：已支付说明重复回调，已取消说明需要走支付退款或异常处理。
+
+### 关单补偿流程
+
+```mermaid
+flowchart TD
+    A[Close job scans PENDING_PAYMENT expire_at] --> B[Conditional update to CANCELLED]
+    B --> C{affected rows}
+    C -->|1| D[Insert status log and outbox]
+    C -->|0| E[Already paid or cancelled]
+    D --> F[Publish OrderCancelled]
+    F --> G[Inventory releases reserved stock]
+```
+
+关单任务要幂等：重复扫描同一订单，只有第一次条件更新成功，后续不会重复释放库存。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| 用户重复提交订单 | 重复订单 | `user_id + idempotency_key` 唯一约束 |
+| 库存预占成功但订单创建失败 | 库存被占住 | 释放库存或补偿扫描孤儿预占 |
+| 支付成功但订单已取消 | 资金和订单冲突 | 触发退款或人工差错处理 |
+| OrderPaid 事件发布失败 | 履约不知道订单已支付 | Outbox 重试发布 |
+| 消费者重复消费 OrderPaid | 重复发货/通知 | 消费者按事件 ID 幂等 |
+| 关单任务和支付回调并发 | 状态竞态 | 条件更新，只有一个成功 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 单体订单 | 本地事务、状态机、唯一约束 |
+| 服务拆分 | 库存/支付/履约事件化，Outbox 保证事件可靠 |
+| 高并发活动 | Redis 预扣、MQ 削峰、异步创建订单 |
+| 多业务线 | 主订单/子订单、金额快照、履约单、退款单 |
+| 平台化 | 多租户、审计、风控、数据归档、冷热分层 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先说明订单服务维护订单权威状态，不直接替代库存和支付。
+2. 创建订单用幂等键和唯一约束防重复。
+3. 库存预占成功后，本地事务写订单、状态流水和 outbox。
+4. 支付回调用条件更新推进 `PENDING_PAYMENT -> PAID`。
+5. 关单任务扫描超时未支付订单，条件更新为取消并发布释放库存事件。
+6. 订单事件通过 Outbox 发布，下游消费者必须幂等。
+7. 所有关键状态变化都写状态流水，方便审计和排障。
+8. 监控订单创建成功率、支付回调延迟、关单积压、outbox 积压和状态冲突数。
+
 ## 检查清单
 
 - 订单状态和合法流转是否明确？
