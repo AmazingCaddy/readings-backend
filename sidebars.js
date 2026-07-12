@@ -74,6 +74,7 @@ const sidebars = {
         'system-design/weibo-feed-system',
         'system-design/train-ticket-system',
         'system-design/flash-sale-system',
+        'system-design/payment-system',
         'practice/high-concurrency-order-system',
       ],
     },
