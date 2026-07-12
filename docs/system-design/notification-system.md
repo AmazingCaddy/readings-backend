@@ -205,6 +205,208 @@ stateDiagram-v2
 
 通知中心要把业务事件和投递任务分开。业务服务只发 `OrderPaid`、`CommentReplied` 这类事件，通知中心用事件唯一键去重，检查用户偏好和频率限制，渲染模板后写站内信和投递任务。站内信列表以数据库为准，未读数可以放 Redis，但要能重算。渠道投递通过 MQ 和 worker 异步执行，任务有 Pending、Sending、Succeeded、RetryableFailed、Dead 等状态。交易通知和营销通知要拆优先级，批量通知要分片限速。
 
+## 深挖：多渠道投递怎么可控
+
+### 业务边界和澄清问题
+
+通知中心要先区分交易通知和营销通知。交易通知是业务闭环的一部分，营销通知更关注触达率和成本。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 通知类型是交易还是营销？ | 优先级不同 | topic、限流和降级策略不同 |
+| 是否必须站内信落库？ | 决定权威记录 | 交易通知通常要可追溯 |
+| 用户能否关闭通知？ | 决定偏好模型 | 偏好按类型和渠道配置 |
+| 是否有免打扰时间？ | 决定延迟投递 | 任务需要 `scheduled_at` |
+| 是否批量触达全量用户？ | 决定任务分片 | 批次、cursor、暂停恢复 |
+
+一个可控边界：交易通知必须可靠记录，营销通知允许限速和降级；站内信保存权威记录，Push/短信/邮件作为渠道投递。
+
+### 容量估算
+
+假设：
+
+```text
+交易通知峰值：10,000 events/s
+营销批量任务：50,000,000 users
+站内信读取峰值：80,000 QPS
+Push 渠道限制：20,000 sends/s
+短信渠道限制：2,000 sends/s
+```
+
+推导：
+
+- 交易和营销必须隔离，否则营销批量会拖慢订单、支付通知。
+- 外部渠道有 QPS 限制，投递任务必须排队和限速。
+- 批量任务不能一次生成 5000 万条任务，需要按用户 cursor 分片。
+- 未读数读取频繁，适合 Redis，但必须能从数据库重算。
+
+### 数据模型和索引
+
+通知事件去重：
+
+```sql
+create table notification_events (
+  event_id varchar(64) primary key,
+  event_type varchar(64) not null,
+  biz_id varchar(128) not null,
+  user_id varchar(64) not null,
+  payload_hash varchar(128) not null,
+  created_at timestamp not null,
+  unique (event_type, biz_id, user_id)
+);
+```
+
+站内信：
+
+```sql
+create table notifications (
+  notification_id varchar(64) primary key,
+  user_id varchar(64) not null,
+  type varchar(64) not null,
+  title varchar(256) not null,
+  content text not null,
+  read_at timestamp,
+  created_at timestamp not null
+);
+
+create index idx_notifications_user_created
+on notifications(user_id, created_at desc, notification_id desc);
+```
+
+投递任务：
+
+```sql
+create table delivery_tasks (
+  task_id varchar(64) primary key,
+  notification_id varchar(64) not null,
+  user_id varchar(64) not null,
+  channel varchar(32) not null,
+  status varchar(32) not null,
+  retry_count int not null default 0,
+  next_retry_at timestamp,
+  provider_message_id varchar(128),
+  created_at timestamp not null,
+  unique (notification_id, channel)
+);
+```
+
+### Redis Key 和 Topic
+
+```text
+notif:unread:{user_id} -> unread count
+notif:pref:{user_id} -> hash(type:channel -> enabled)
+notif:dedupe:{event_type}:{biz_id}:{user_id}:{channel} -> 1
+notif:rate:{channel}:{second} -> send count
+notif:batch:{batch_id}:cursor -> last_user_id
+```
+
+Topic 按优先级拆：
+
+```text
+notification.event.transaction
+notification.event.social
+notification.event.marketing
+notification.delivery.push
+notification.delivery.sms
+notification.delivery.email
+```
+
+### 路由和投递流程
+
+```mermaid
+sequenceDiagram
+    participant B as Biz Service
+    participant R as Router
+    participant DB as Notification DB
+    participant MQ as Delivery MQ
+    participant W as Channel Worker
+    participant P as Provider
+
+    B->>R: OrderPaid event
+    R->>DB: insert event dedupe row
+    R->>R: load preference and render template
+    R->>DB: insert inbox notification
+    R->>DB: insert delivery tasks
+    R->>MQ: publish push/sms tasks
+    MQ-->>W: consume task
+    W->>P: send by provider API
+    W->>DB: update delivery status
+```
+
+路由规则可以表驱动：
+
+| 通知类型 | 站内信 | Push | 短信 | 邮件 |
+| --- | --- | --- | --- | --- |
+| 订单支付成功 | 是 | 是 | 否 | 否 |
+| 物流异常 | 是 | 是 | 是 | 否 |
+| 优惠券过期 | 是 | 是 | 否 | 可选 |
+| 安全登录提醒 | 是 | 是 | 是 | 是 |
+
+### 未读数一致性
+
+未读数适合 Redis，但不能只存在 Redis。
+
+```mermaid
+flowchart TD
+    A[Insert notification] --> B[Redis INCR unread]
+    C[User marks read] --> D[DB update read_at]
+    D --> E[Redis DECR unread]
+    F[Periodic job] --> G[Recount DB unread]
+    G --> H[Repair Redis unread]
+```
+
+批量已读不建议逐条同步更新海量记录，可以记录 `read_all_before`，列表读取时合并判断，再异步清理。
+
+### 批量通知任务
+
+批量通知不要一次展开所有用户：
+
+```mermaid
+flowchart TD
+    A[Create batch task] --> B[Scan users by cursor]
+    B --> C[Create tasks for one page]
+    C --> D[Update batch cursor]
+    D --> E{More users?}
+    E -->|yes| B
+    E -->|no| F[Batch completed]
+```
+
+批量任务表要保存 `status`、`cursor`、`rate_limit`、`paused_reason`，支持暂停和恢复。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| 业务事件重复 | 用户收到重复通知 | `event_type + biz_id + user_id` 去重 |
+| Push token 失效 | 无限重试浪费资源 | 标记永久失败，更新设备 token |
+| 短信渠道限流 | 任务积压或失败 | 渠道限速、延迟重试、交易优先 |
+| 模板错误 | 大量发送失败 | 模板版本、灰度、DLQ 修复后重放 |
+| 未读数不准 | 用户体验异常 | 定期按 DB 重算修正 Redis |
+| 营销批量拖慢交易通知 | 交易通知延迟 | topic/worker/限流隔离 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 单业务通知 | 同步写站内信，简单 Push |
+| 多业务接入 | 事件去重、模板系统、用户偏好 |
+| 多渠道 | 投递任务状态机、渠道限流、失败重试 |
+| 大批量 | 批次任务、分片扫描、暂停恢复 |
+| 平台化 | 租户隔离、A/B、触达率分析、成本控制 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先区分交易通知和营销通知，交易优先级更高。
+2. 业务服务只发事件，通知中心负责路由、模板、偏好和投递。
+3. 事件用业务唯一键去重，避免重复通知。
+4. 站内信落库作为权威记录，未读数放 Redis 并可重算。
+5. Push、短信、邮件拆成 delivery task，通过 MQ 和 worker 异步投递。
+6. 渠道失败区分可重试和永久失败，重试有上限，失败进 DLQ。
+7. 批量通知用 batch cursor 分片，不一次性展开全量用户。
+8. 监控事件积压、投递成功率、渠道错误、未读数修正、批量任务进度。
+
 ## 术语回看
 
 - [幂等](./glossary.md#幂等)
