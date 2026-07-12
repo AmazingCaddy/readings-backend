@@ -49,9 +49,6 @@ const config = {
       navbar: {
         title: 'Backend Readings',
         items: [
-          { to: '/', label: '学习路径', position: 'left' },
-          { to: '/fundamentals/request-lifecycle', label: '请求链路', position: 'left' },
-          { to: '/practice/high-concurrency-order-system', label: '实践项目', position: 'left' },
           {
             href: 'https://github.com/AmazingCaddy/readings-backend',
             label: 'GitHub',
