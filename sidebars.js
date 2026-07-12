@@ -93,6 +93,7 @@ const sidebars = {
         'system-design/short-url-system',
         'system-design/comment-like-system',
         'system-design/notification-system',
+        'system-design/instant-messaging-system',
         'practice/high-concurrency-order-system',
       ],
     },
