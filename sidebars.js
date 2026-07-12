@@ -71,6 +71,7 @@ const sidebars = {
       label: '后端经典算法',
       items: [
         'algorithms/snowflake-id',
+        'algorithms/consistent-hashing',
       ],
     },
     {
