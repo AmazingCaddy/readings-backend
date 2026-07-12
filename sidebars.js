@@ -82,6 +82,7 @@ const sidebars = {
       label: '微服务与服务治理',
       items: [
         'microservices/service-boundaries',
+        'microservices/api-gateway-bff',
       ],
     },
     {
