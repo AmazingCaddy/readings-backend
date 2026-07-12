@@ -179,6 +179,202 @@ stateDiagram-v2
 
 支付系统要围绕状态机和幂等设计。创建支付单用业务请求号去重，渠道调用保存 attempt，回调用事件 ID 去重并验签。支付状态只能从 Created/Paying 推进到 Succeeded、Failed 或 Closed。支付成功后同一事务写账务流水和 outbox 事件，订单服务异步幂等消费。回调丢失靠查单和对账补偿，账务差异要有审计和处理流程。简单说：请求可以重试，回调可以重复，消息可以重放，但资金结果只能生效一次。
 
+## 深挖：资金正确性的设计细节
+
+### 业务边界和澄清问题
+
+支付系统面试最重要的是先声明边界：支付系统不直接扣用户银行卡的钱，而是管理本地支付单、调用渠道、接收渠道结果、通知订单和做对账。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 是否支持多渠道？ | 微信、支付宝、银行卡状态不同 | 需要 channel adapter 和统一状态映射 |
+| 一个订单是否允许多次支付尝试？ | 用户可能换渠道重试 | 订单和支付单要分开建模 |
+| 是否支持部分退款？ | 退款状态更复杂 | 需要 refund order 和退款流水 |
+| 支付结果以谁为准？ | 渠道和本地可能不一致 | 渠道账单 + 本地账务对账 |
+| 回调 SLA 是多少？ | 回调可能丢失或延迟 | 需要查单和补偿任务 |
+
+一个清晰边界：订单服务创建订单，支付服务创建支付单并调用渠道；支付成功后，支付服务写本地状态和账务流水，再通过事件通知订单服务。
+
+### 容量估算
+
+假设一个电商支付系统：
+
+```text
+日订单量：2,000,000
+支付转化率：60%
+支付请求峰值：3,000 QPS
+渠道回调峰值：5,000 QPS
+用户支付状态查询峰值：20,000 QPS
+日退款量：50,000
+```
+
+推导：
+
+- 创建支付和回调写库量不算极高，但资金正确性要求高。
+- 状态查询 QPS 可能远高于支付写入，可以短 TTL 缓存支付状态。
+- 回调集中到达时，要让验签、去重、状态更新路径足够短。
+- 对账是批处理，不应该和在线支付抢数据库资源。
+
+### 数据模型、索引和幂等键
+
+支付单和渠道尝试要分开：
+
+```sql
+create table payment_orders (
+  payment_id varchar(64) primary key,
+  merchant_order_id varchar(64) not null,
+  user_id varchar(64) not null,
+  amount_cents bigint not null,
+  currency varchar(8) not null,
+  status varchar(32) not null,
+  request_id varchar(128) not null,
+  created_at timestamp not null,
+  updated_at timestamp not null,
+  unique (merchant_order_id),
+  unique (user_id, request_id)
+);
+
+create table payment_attempts (
+  attempt_id varchar(64) primary key,
+  payment_id varchar(64) not null,
+  channel varchar(32) not null,
+  channel_request_no varchar(128) not null,
+  channel_trade_no varchar(128),
+  status varchar(32) not null,
+  created_at timestamp not null,
+  unique (channel, channel_request_no),
+  unique (channel, channel_trade_no)
+);
+
+create table payment_callbacks (
+  channel varchar(32) not null,
+  channel_event_id varchar(128) not null,
+  payment_id varchar(64) not null,
+  payload_hash varchar(128) not null,
+  created_at timestamp not null,
+  primary key (channel, channel_event_id)
+);
+```
+
+账务流水不要只保存“状态变了”，还要保存方向和金额：
+
+```sql
+create table accounting_entries (
+  entry_id varchar(64) primary key,
+  payment_id varchar(64) not null,
+  entry_type varchar(32) not null,
+  direction varchar(16) not null,
+  amount_cents bigint not null,
+  created_at timestamp not null,
+  unique (payment_id, entry_type)
+);
+```
+
+Redis Key：
+
+```text
+pay:status:{payment_id} -> status snapshot, TTL 30s
+pay:idem:{user_id}:{request_id} -> payment_id or PROCESSING
+pay:callback:{channel}:{event_id} -> processed marker, TTL 24h
+pay:query:lock:{payment_id} -> avoid repeated channel query
+```
+
+MQ Topic：
+
+```text
+payment.succeeded
+payment.failed
+payment.refunded
+payment.reconcile.diff
+```
+
+### 回调乱序和状态条件更新
+
+渠道可能先返回 `SUCCESS`，后面又来一个较早的 `PAYING` 通知。不能让旧状态覆盖新状态。
+
+```mermaid
+sequenceDiagram
+    participant C as Channel
+    participant API as Callback API
+    participant DB as Payment DB
+
+    C->>API: SUCCESS callback
+    API->>DB: insert callback event
+    API->>DB: update Paying -> Succeeded
+    C->>API: PAYING callback arrives late
+    API->>DB: insert callback event
+    API->>DB: update Created -> Paying
+    DB-->>API: affected rows = 0
+```
+
+状态更新必须写成条件更新：
+
+```sql
+update payment_orders
+set status = 'SUCCEEDED', updated_at = now()
+where payment_id = ?
+  and status in ('CREATED', 'PAYING');
+```
+
+如果当前已经是 `SUCCEEDED`，重复成功回调应该返回成功，不要报错。
+
+### 查单和对账补偿
+
+支付系统至少有两类补偿：
+
+- **实时补偿**：用户支付后页面轮询，如果本地还是 `PAYING`，后台查渠道确认。
+- **日终对账**：下载渠道账单，和本地支付流水逐笔比对。
+
+```mermaid
+flowchart TD
+    A[Local payment PAYING] --> B[Query channel]
+    B --> C{Channel result}
+    C -->|SUCCESS| D[Mark SUCCEEDED and write accounting]
+    C -->|FAILED| E[Mark FAILED]
+    C -->|UNKNOWN| F[Retry later]
+
+    G[Daily channel bill] --> H[Compare local entries]
+    H --> I{Diff?}
+    I -->|yes| J[Create reconcile diff]
+    I -->|no| K[Mark reconciled]
+```
+
+对账差异不要静默修复，至少要记录差错类型：本地有渠道无、渠道有本地无、金额不一致、状态不一致。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| 创建渠道支付超时 | 不知道渠道是否创建成功 | 本地保持 `PAYING`，用 `channel_request_no` 查单 |
+| 回调重复 | 重复发支付成功事件 | 回调表唯一约束 + 状态条件更新 |
+| 回调丢失 | 订单一直待支付 | 查单任务和对账补偿 |
+| 支付成功事件发 MQ 失败 | 订单服务不知道已支付 | Outbox publisher 重试 |
+| 本地成功但渠道账单无记录 | 资金风险 | 对账差错，冻结后续流程或人工处理 |
+| 退款成功但通知失败 | 用户看到状态不一致 | 退款状态以支付库为准，事件可重放 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 单渠道 | 支付单、回调幂等、查单补偿 |
+| 多渠道 | Channel adapter、统一状态机、错误码映射 |
+| 资金闭环 | 账务流水、对账、差错处理、审计日志 |
+| 高可用 | 多渠道路由、渠道降级、限流、隔离线程池 |
+| 平台化 | 商户维度、费率、分账、风控、报表 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先区分订单和支付单，一个订单可能有多次支付尝试。
+2. 创建支付用 `request_id` 幂等，渠道调用用 `channel_request_no` 幂等。
+3. 渠道回调必须验签、去重、条件更新状态。
+4. 支付成功要同事务写支付状态、账务流水和 outbox 事件。
+5. 订单服务异步消费支付成功事件，也要幂等。
+6. 回调丢失靠查单，长期差异靠对账。
+7. 支付状态机禁止回退，旧回调不能覆盖新状态。
+8. 监控关注支付成功率、回调失败率、查单补偿量、对账差错数、渠道延迟。
+
 ## 术语回看
 
 - [幂等](./glossary.md#幂等)
