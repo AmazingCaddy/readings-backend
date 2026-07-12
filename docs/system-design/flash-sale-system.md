@@ -159,6 +159,153 @@ stateDiagram-v2
 
 秒杀系统要尽早过滤请求。静态页走 CDN，网关做限流和防刷，服务端校验活动 token 和用户资格。库存放 Redis，用 Lua 原子完成去重和预扣，成功请求进入 MQ，后台 worker 异步创建待支付订单。数据库只承接少量成功请求，支付超时后关单释放库存。全链路要有结果查询、队列积压监控、库存对账和补偿任务。可以把它理解成：入口挡流量，Redis 抢资格，MQ 排队，数据库做最终确认。
 
+## 深挖：从面试题到真实设计
+
+### 业务边界和澄清问题
+
+面试时不要一上来画 Redis 和 MQ。先把业务边界问清楚：
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 是一人一单，还是一人可以买多件？ | 决定唯一约束 | `user_id + activity_id` 或允许多订单 |
+| 库存是单商品，还是多 SKU？ | 决定库存 key 和扣减粒度 | 单 key、分片 key 或 SKU 维度库存 |
+| 成功标准是抢到资格，还是支付完成？ | 决定状态机 | `Accepted` 不等于最终成交 |
+| 是否允许候补或回流库存？ | 决定取消后的处理 | 直接回补、候补队列或结束后退款 |
+| 活动是否需要公平排队？ | 决定入口策略 | 直接抢、排队页、令牌发放 |
+
+一个合理的面试边界可以这样设定：只做单活动、单商品、每人最多一单、库存有限、下单后 15 分钟支付，超时释放资格，不做复杂优惠和物流。
+
+### 容量估算
+
+容量估算的作用不是追求精确，而是说明为什么要用缓存、限流和队列。
+
+假设：
+
+```text
+活动库存：10,000 件
+预约用户：5,000,000
+开抢前 10 秒到达：1,000,000 请求
+入口峰值 QPS：100,000
+真实可成功请求：10,000
+订单库可稳定写入：2,000 TPS
+```
+
+推导：
+
+- 如果所有请求都查数据库，数据库会被 100,000 QPS 打垮。
+- Redis 只需要筛出约 10,000 个成功资格，失败请求在缓存层返回。
+- MQ 需要吸收 10,000 条创建订单命令；如果 worker 每秒创建 2,000 单，约 5 秒可消化。
+- 结果查询可能比下单请求更久，用户会反复刷新，所以 `result:{activity_id}:{user_id}` 要缓存。
+
+### 具体数据模型和 Key
+
+数据库最终表：
+
+```sql
+create table flash_sale_orders (
+  order_id varchar(64) primary key,
+  activity_id varchar(64) not null,
+  user_id varchar(64) not null,
+  sku_id varchar(64) not null,
+  quantity int not null,
+  status varchar(32) not null,
+  created_at timestamp not null,
+  updated_at timestamp not null,
+  unique (activity_id, user_id)
+);
+
+create table stock_deductions (
+  deduction_id varchar(64) primary key,
+  activity_id varchar(64) not null,
+  sku_id varchar(64) not null,
+  order_id varchar(64) not null,
+  quantity int not null,
+  type varchar(32) not null,
+  created_at timestamp not null
+);
+```
+
+Redis Key：
+
+```text
+fs:stock:{activity_id}:{sku_id} -> available stock
+fs:user:{activity_id}:{user_id} -> PROCESSING / ORDERED / SOLD_OUT
+fs:result:{activity_id}:{user_id} -> order_id or failure reason
+fs:rate:user:{user_id}:{second} -> request count
+fs:rate:activity:{activity_id}:{second} -> request count
+fs:token:{activity_id}:{user_id} -> pre-issued access token
+```
+
+MQ Topic：
+
+```text
+flashsale.order.create
+key = activity_id + ':' + user_id
+payload = {activity_id, user_id, sku_id, quantity, request_id}
+```
+
+`key` 里带 `activity_id + user_id`，可以让同一个用户同一活动的消息进入同一分区，方便去重和顺序处理。
+
+### 并发冲突流程
+
+同一个用户重复点击时，Redis Lua 要一次性完成“是否抢过”和“是否还有库存”的判断。
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as FlashSale API
+    participant R as Redis Lua
+    participant MQ as MQ
+
+    U->>API: click buy twice
+    API->>R: check user marker and decr stock
+    API->>R: check user marker and decr stock
+    R-->>API: first request OK
+    R-->>API: second request DUPLICATE
+    API->>MQ: publish only one CreateOrder
+```
+
+核心原则：重复请求不能进入 MQ，更不能进入数据库。Redis 去重只是第一层，数据库 `unique (activity_id, user_id)` 是最后防线。
+
+### 失败补偿流程
+
+最容易被追问的是“Redis 扣了库存，但后面失败怎么办”。可以按下面讲：
+
+```mermaid
+flowchart TD
+    A[Redis stock deducted] --> B{MQ publish success?}
+    B -->|no| C[restore Redis stock]
+    B -->|yes| D[Worker creates order]
+    D --> E{DB transaction success?}
+    E -->|yes| F[mark result ORDERED]
+    E -->|no retryable| G[retry message]
+    E -->|no final failure| H[restore stock and mark FAILED]
+```
+
+补偿要记录原因和幂等键，不能只简单 `INCR stock`。否则重复补偿可能把库存加多。更稳的做法是写库存流水，按流水对账。
+
+### 演进路线
+
+| 规模 | 设计 |
+| --- | --- |
+| 1,000 QPS | 应用限流 + DB 条件更新，可能不需要 MQ |
+| 10,000 QPS | Redis 原子预扣 + MQ 异步落单 + DB 唯一约束 |
+| 100,000 QPS | CDN 静态化、排队页、活动 token、库存分片、结果缓存 |
+| 更大规模 | 分活动分集群、热点活动隔离、预发令牌、风控前置、容量预案 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先澄清边界：单活动、单 SKU、每人一单、下单后支付。
+2. 做容量估算：入口 10 万 QPS，但库存只有 1 万，数据库不能承接全部请求。
+3. 入口保护：CDN、网关限流、防刷、活动 token。
+4. 核心链路：Redis Lua 原子去重和扣库存，成功后进 MQ。
+5. 落库链路：worker 创建订单，数据库唯一约束防重复，库存流水用于对账。
+6. 状态和查询：API 返回处理中，用户查结果缓存，最终看订单状态。
+7. 失败补偿：MQ 失败、worker 失败、支付超时都要回补或标记失败。
+8. 观测：入口 QPS、Redis 错误率、库存剩余、MQ lag、订单创建成功率、补偿失败数。
+
 ## 术语回看
 
 - [削峰](./glossary.md#削峰)
