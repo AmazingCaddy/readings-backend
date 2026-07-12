@@ -191,6 +191,175 @@ stateDiagram-v2
 
 火车票系统要把查询和下单分开。查询走缓存和读库，允许短暂不准；下单必须进入库存服务，通过限流和队列保护写热点。库存扣减以数据库事务或座位锁为准，因为同一座位不能卖给两个人。订单状态从待支付到已支付、已出票、取消或退款。支付回调和关单任务都要幂等。余票变化、订单超时和候补唤醒通过 MQ 异步处理，Outbox 保证事件可靠发布。
 
+## 深挖：区间库存和座位锁
+
+### 业务边界和澄清问题
+
+火车票系统的复杂度来自“区间”。同一座位从 A 到 E 可以卖给 A-B、B-C、C-E 多段，但不能卖给区间重叠的两个人。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 是否支持选座？ | 决定是否需要座位级锁 | 不选座可先扣席别库存 |
+| 是否支持中转？ | 路径搜索复杂度不同 | 单程直达或多段组合 |
+| 余票查询是否必须准确？ | 决定缓存策略 | 查询可近似，下单强一致 |
+| 支付前是否锁座？ | 决定锁超时 | 待支付期间座位不可售 |
+| 是否有候补？ | 决定取消后的唤醒流程 | 需要候补队列和公平策略 |
+
+一个可控边界：只做单程直达，不做中转；查询按车次和席别展示余票；下单时锁定具体座位，15 分钟未支付释放。
+
+### 容量估算
+
+假设春运高峰：
+
+```text
+日查询量：500,000,000
+查询峰值：200,000 QPS
+下单峰值：20,000 QPS
+支付回调峰值：10,000 QPS
+热门车次座位数：1,000
+站点数：20，区间组合约 190
+```
+
+推导：
+
+- 查询远高于下单，必须缓存车次、站点、余票快照。
+- 下单不能信查询缓存，必须进入库存服务做强校验。
+- 一个车次有多个站点区间，不能只用 `train_id + seat_type` 一个库存数。
+- 热门车次下单要排队或限流，保护座位锁和库存数据库。
+
+### 区间库存模型
+
+简化表结构：
+
+```sql
+create table train_segments (
+  train_id varchar(64) not null,
+  from_station varchar(32) not null,
+  to_station varchar(32) not null,
+  seat_type varchar(32) not null,
+  available int not null,
+  version int not null default 0,
+  primary key (train_id, from_station, to_station, seat_type)
+);
+
+create table seat_locks (
+  lock_id varchar(64) primary key,
+  train_id varchar(64) not null,
+  seat_id varchar(64) not null,
+  from_station varchar(32) not null,
+  to_station varchar(32) not null,
+  order_id varchar(64) not null,
+  status varchar(32) not null,
+  expire_at timestamp not null,
+  created_at timestamp not null
+);
+```
+
+如果用户买 B 到 D，就要扣减所有被覆盖的小区间，例如 B-C、C-D。条件更新必须全部成功，否则回滚。
+
+```sql
+update train_segments
+set available = available - 1, version = version + 1
+where train_id = ?
+  and seat_type = ?
+  and from_station >= ?
+  and to_station <= ?
+  and available > 0;
+```
+
+实际实现通常会把站点映射成序号，避免直接比较站名。
+
+### Redis Key 和 MQ Topic
+
+查询缓存：
+
+```text
+train:route:{from}:{to}:{date} -> train list snapshot
+train:stock:{train_id}:{date}:{seat_type} -> segment stock snapshot
+train:station-map:{train_id} -> station index map
+ticket:result:{user_id}:{request_id} -> PROCESSING / SUCCESS / FAILED
+```
+
+写链路事件：
+
+```text
+ticket.order.create
+ticket.seat.locked
+ticket.payment.succeeded
+ticket.order.cancelled
+ticket.waitlist.wakeup
+```
+
+### 下单和锁座流程
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as Ticket API
+    participant Q as Queue
+    participant S as Seat Service
+    participant DB as Inventory DB
+    participant O as Order DB
+
+    U->>API: submit ticket order
+    API->>Q: enqueue request by train_id
+    Q-->>S: consume in controlled rate
+    S->>DB: transaction deduct segment stock and lock seat
+    S->>O: create pending payment order
+    O-->>U: query result SUCCESS
+```
+
+热门车次可以按 `train_id + date` 分队列，避免一个大热点拖慢所有车次。
+
+### 候补和取消补偿
+
+取消订单后，不一定直接把票放回公开库存。可以先唤醒候补队列：
+
+```mermaid
+flowchart TD
+    A[Order cancelled or timeout] --> B[Release seat lock]
+    B --> C{Waitlist exists?}
+    C -->|yes| D[Wake first eligible request]
+    C -->|no| E[Return to public stock]
+    D --> F[Create pending payment order]
+```
+
+候补要注意公平性：按请求时间、乘车区间、席别匹配，不要让后来的短区间总是插队。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| 查询缓存显示有票但下单失败 | 用户体验差 | 查询提示余票可能变化，下单以库存库为准 |
+| 区间库存扣了一半 | 数据不一致 | 同一事务扣所有覆盖区间，失败回滚 |
+| 座位锁创建成功但订单失败 | 座位被占住 | 孤儿锁扫描按 `expire_at` 释放 |
+| 支付成功但锁已过期 | 钱票不一致 | 支付回调条件更新，异常进入退款或人工处理 |
+| 候补唤醒消息丢失 | 候补用户没被通知 | Outbox + 重试，候补状态可扫描补偿 |
+| 热门车次队列积压 | 用户长时间处理中 | 限流、排队页、按车次隔离消费者 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 小规模 | 查询缓存 + DB 事务锁座 |
+| 高峰购票 | 按车次排队、限流、异步下单、结果查询 |
+| 支持选座 | 座位级锁、区间重叠检测 |
+| 支持候补 | 候补队列、公平唤醒、取消回补 |
+| 大规模票务 | 车次分片、冷热线路隔离、库存服务独立扩容 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先说明查询和下单分离，查询允许短暂不准，下单必须强一致。
+2. 火车票难点是区间库存，同一座位不能卖给重叠区间。
+3. 查询用缓存和读库，下单进入库存服务，热门车次排队限流。
+4. 下单事务里扣所有覆盖区间库存并创建座位锁。
+5. 创建待支付订单，支付超时释放座位或唤醒候补。
+6. 支付回调、关单、候补唤醒都用条件更新保证幂等。
+7. 故障靠孤儿锁扫描、库存对账、Outbox 重发和候补补偿恢复。
+8. 监控查询命中率、下单成功率、车次队列 lag、锁释放失败和库存差异。
+
 ## 术语回看
 
 - [最终一致性](./glossary.md#最终一致性)
