@@ -86,6 +86,7 @@ const sidebars = {
         'microservices/service-discovery-config',
         'microservices/service-call-governance',
         'microservices/saga-tcc',
+        'microservices/canary-release-rollback',
       ],
     },
     {
