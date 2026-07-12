@@ -82,7 +82,7 @@ const config = {
         copyright: `Copyright © ${new Date().getFullYear()} Backend Readings. Built with Docusaurus.`,
       },
       prism: {
-        additionalLanguages: ['java', 'go', 'sql', 'bash', 'json'],
+        additionalLanguages: ['java', 'go', 'sql', 'bash', 'json', 'typescript', 'python'],
       },
       colorMode: {
         defaultMode: 'light',
