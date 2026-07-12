@@ -108,6 +108,7 @@ const sidebars = {
       label: '组件协作模式',
       items: [
         'collaboration/redis-database-consistency',
+        'collaboration/read-write-splitting-cache',
         'collaboration/database-mq-outbox',
         'collaboration/async-result-return',
         'collaboration/worker-mq-consumption',
