@@ -85,6 +85,7 @@ const sidebars = {
       label: '后端面试路径',
       items: [
         'interview/backend-api-layering',
+        'interview/database-modeling-concurrency',
       ],
     },
     {
