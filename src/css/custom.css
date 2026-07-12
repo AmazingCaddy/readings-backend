@@ -1,0 +1,45 @@
+:root {
+  --ifm-color-primary: #176b87;
+  --ifm-color-primary-dark: #145f78;
+  --ifm-color-primary-darker: #125970;
+  --ifm-color-primary-darkest: #0f495c;
+  --ifm-color-primary-light: #1a7796;
+  --ifm-color-primary-lighter: #1c7d9e;
+  --ifm-color-primary-lightest: #2390b5;
+  --ifm-code-font-size: 94%;
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.theme-doc-markdown h1 {
+  letter-spacing: 0;
+}
+
+.theme-doc-markdown table {
+  display: table;
+  width: 100%;
+}
+
+.theme-doc-markdown .mermaid {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+}
+
+.learning-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.learning-card {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--ifm-background-surface-color);
+}
+
+.learning-card h3 {
+  margin-top: 0;
+}
