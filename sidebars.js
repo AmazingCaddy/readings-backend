@@ -88,6 +88,7 @@ const sidebars = {
         'collaboration/database-mq-outbox',
         'collaboration/async-result-return',
         'collaboration/worker-mq-consumption',
+        'collaboration/order-flow-collaboration',
       ],
     },
     {
