@@ -197,6 +197,171 @@ stateDiagram-v2
 
 短链接系统读多写少。创建短链用 `request_id` 做幂等，短码用 Base62 或随机码生成，并由数据库唯一索引保证不冲突。跳转时先查本地缓存和 Redis，未命中再查数据库；不存在短码写短 TTL 空值缓存防穿透。点击统计通过 MQ 异步处理，避免同步更新计数拖慢跳转。状态上要支持 Active、Blocked、Expired，封禁和过期必须在读链路校验。热点短链用本地缓存、计数分片和限流保护。
 
+## 深挖：跳转链路怎么做到快且可控
+
+### 业务边界和澄清问题
+
+短链接系统要先问清楚是内部营销短链，还是面向公网的开放平台。开放平台需要更多风控和隔离。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 短链是否永久有效？ | 决定 TTL 和归档 | 永久短链不能简单清理 |
+| 是否支持自定义短码？ | 决定冲突处理 | 用户输入也要唯一约束 |
+| 是否要统计每次点击？ | 决定是否用 302 | 301 可能被浏览器缓存 |
+| 是否要审核目标 URL？ | 决定风控链路 | 创建时检测，跳转时二次校验 |
+| 是否多租户？ | 决定隔离 | `tenant_id + code` 或全局 code |
+
+一个可控边界：全局短码，默认 302 跳转，支持过期和封禁，点击统计最终一致。
+
+### 容量估算
+
+假设：
+
+```text
+短链创建：1,000 QPS
+跳转峰值：200,000 QPS
+热门短链峰值：50,000 QPS
+不存在短码扫描：20,000 QPS
+点击事件量：每天 2,000,000,000
+```
+
+推导：
+
+- 跳转链路远高于创建链路，必须优先优化读路径。
+- 点击统计不能同步写数据库，否则 200,000 QPS 会打爆写库。
+- 不存在短码扫描会造成穿透，必须有空值缓存、布隆过滤或限流。
+- 热门短链即使缓存命中，也可能压垮 Redis 单分片，需要本地缓存。
+
+### 短码生成策略
+
+| 方案 | 做法 | 适合场景 |
+| --- | --- | --- |
+| 自增 ID + Base62 | ID 转短码 | 内部系统，简单无冲突 |
+| 号段 + Base62 | 每个节点拿一段 ID | 多节点高并发创建 |
+| 随机码 | 随机生成，唯一索引兜底 | 防猜测要求高 |
+| 自定义码 | 用户指定 code | 营销活动、品牌短链 |
+
+随机码必须处理冲突：
+
+```mermaid
+flowchart TD
+    A[Generate random code] --> B[Insert url_mappings]
+    B --> C{Unique conflict?}
+    C -->|yes| A
+    C -->|no| D[Return short url]
+```
+
+不管哪种方案，数据库唯一索引都必须存在：
+
+```sql
+create table url_mappings (
+  code varchar(32) primary key,
+  long_url text not null,
+  owner_id varchar(64) not null,
+  status varchar(32) not null,
+  expire_at timestamp,
+  created_at timestamp not null
+);
+```
+
+### 跳转链路分层
+
+跳转接口要尽量少做事：
+
+```mermaid
+flowchart LR
+    A[GET /{code}] --> B[Local cache]
+    B -->|hit| C[Check status and 302]
+    B -->|miss| D[Redis]
+    D -->|hit| C
+    D -->|miss| E[DB]
+    E --> F[Set Redis mapping or null cache]
+    C --> G[Async click event]
+```
+
+缓存值不能只存 long URL，还要存状态和过期时间：
+
+```json
+{
+  "longUrl": "https://example.com/products/1001",
+  "status": "ACTIVE",
+  "expireAt": "2026-08-01T00:00:00Z"
+}
+```
+
+这样封禁和过期可以在跳转链路快速判断。
+
+### 点击统计链路
+
+点击事件进入 MQ 或日志管道：
+
+```text
+url.click.raw
+key = code
+payload = {code, owner_id, ip_hash, ua, referer, ts}
+```
+
+统计不要影响跳转成功。MQ 失败时可以本地短暂缓冲或丢弃低价值明细，但安全审计类事件要更可靠。
+
+```mermaid
+sequenceDiagram
+    participant G as Redirect Gateway
+    participant MQ as Click MQ
+    participant OLAP as Analytics Store
+
+    G-->>MQ: publish click event async
+    MQ-->>OLAP: batch consume
+    OLAP-->>OLAP: aggregate by code/hour/referer
+```
+
+### 封禁和缓存一致性
+
+封禁链路要快于普通缓存 TTL：
+
+```mermaid
+flowchart TD
+    A[Risk marks code blocked] --> B[Update DB status BLOCKED]
+    B --> C[Delete url:map:{code}]
+    B --> D[Set url:block:{code}]
+    D --> E[Gateway local cache expires shortly]
+```
+
+本地缓存 TTL 不宜太长，例如 1 到 5 秒。否则恶意链接封禁后仍可能短时间跳转。
+
+### 故障场景深挖
+
+| 故障 | 风险 | 处理 |
+| --- | --- | --- |
+| Redis 故障 | 所有请求回源 DB | 本地缓存兜底、回源限流、热门短链降级 |
+| 恶意扫描短码 | DB 被穿透 | 空值缓存、布隆过滤、IP 限流 |
+| 点击 MQ 积压 | 统计延迟 | 跳转优先，统计异步积压告警 |
+| 短码冲突 | 创建失败 | 唯一约束 + 重试生成 |
+| 封禁缓存未失效 | 恶意链接继续访问 | 删除映射 key + block key + 短本地 TTL |
+| 长 URL 风险漏检 | 安全风险 | 创建时审核，跳转时可按风险等级二次校验 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 小规模 | DB 查询 + Redis 缓存 |
+| 高跳转量 | 本地缓存、Redis 集群、点击 MQ |
+| 开放平台 | 租户隔离、配额、审核、风控 |
+| 全球访问 | 边缘节点缓存、地域就近跳转、异步统计回传 |
+| 数据分析 | OLAP、漏斗分析、反作弊、报表导出 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 短链接是读多写少，跳转链路必须极短。
+2. 创建短链用幂等请求号，短码由 Base62 或随机码生成，唯一索引兜底。
+3. 跳转先本地缓存，再 Redis，再 DB，缓存值包含 URL、状态和过期时间。
+4. 不存在短码写空值缓存，防止恶意扫描穿透 DB。
+5. 点击统计异步进 MQ，不同步写数据库。
+6. 热门短链用本地缓存和限流保护 Redis。
+7. 封禁时更新 DB，删除映射缓存，写 block key，本地缓存短 TTL。
+8. 监控跳转 P99、缓存命中率、空值命中、Redis 错误率、点击 MQ lag。
+
 ## 术语回看
 
 - [幂等](./glossary.md#幂等)
