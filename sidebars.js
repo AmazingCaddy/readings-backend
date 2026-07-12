@@ -84,6 +84,7 @@ const sidebars = {
         'microservices/service-boundaries',
         'microservices/api-gateway-bff',
         'microservices/service-discovery-config',
+        'microservices/service-call-governance',
       ],
     },
     {
