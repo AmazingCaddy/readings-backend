@@ -168,6 +168,18 @@ Outbox 堆积：
 | 没有业务指标 | 技术指标正常但用户投诉 | 加订单成功率、支付成功率 |
 | 修复后不验证 | 不知道是否恢复 | 用指标确认 P99、错误率回落 |
 
+## 监控指标
+
+一套可落地的核心指标至少包括：
+
+- 流量：`http_server_requests_total{route,method,status}`
+- 错误：`http_server_errors_total{route,error_type}`
+- 延迟：`http_server_request_duration_ms{route}`
+- 饱和度：`db_connection_pool_wait_ms{pool}`、`mq_consumer_lag_messages{topic}`
+- 业务结果：`order_create_success_total`、`payment_succeeded_total`
+- 保护动作：`rate_limit_blocked_total{rule}`、`circuit_breaker_open_total{dependency}`
+- 异步可靠性：`outbox_pending_events_total{event_type}`、`mq_dlq_total{topic}`
+
 ## 完整业务例子
 
 订单创建接口仪表盘：
