@@ -86,6 +86,7 @@ const sidebars = {
       items: [
         'interview/backend-api-layering',
         'interview/database-modeling-concurrency',
+        'interview/backend-interview-qa',
       ],
     },
     {
