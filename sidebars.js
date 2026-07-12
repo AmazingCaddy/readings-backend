@@ -90,6 +90,7 @@ const sidebars = {
         'system-design/train-ticket-system',
         'system-design/flash-sale-system',
         'system-design/payment-system',
+        'system-design/short-url-system',
         'practice/high-concurrency-order-system',
       ],
     },
