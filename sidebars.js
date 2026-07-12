@@ -70,6 +70,7 @@ const sidebars = {
       type: 'category',
       label: '系统设计与项目实践',
       items: [
+        'system-design/glossary',
         'system-design/order-system',
         'system-design/weibo-feed-system',
         'system-design/train-ticket-system',
