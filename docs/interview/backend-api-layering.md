@@ -220,8 +220,12 @@ class OrderService {
     if (input.quantity <= 0) throw new BadRequest('quantity must be positive');
 
     return this.orders.transaction(async () => {
-      const existing = await this.idem.findResult(input.userId, input.idempotencyKey);
-      if (existing) return existing;
+      const started = await this.idem.tryStart(input.userId, input.idempotencyKey);
+      if (!started) {
+        const existing = await this.idem.findResult(input.userId, input.idempotencyKey);
+        if (existing) return existing;
+        throw new ConflictError('same request is still processing');
+      }
 
       const order = await this.orders.insertPendingOrder(input);
       await this.idem.saveResult(input.userId, input.idempotencyKey, order);
@@ -231,7 +235,7 @@ class OrderService {
 }
 ```
 
-这个例子里，Controller 不直接写 SQL，也不判断订单状态；Repository 不决定业务是否允许创建订单；幂等逻辑放在 Service 的事务里。
+这个例子里，Controller 不直接写 SQL，也不判断订单状态；Repository 不决定业务是否允许创建订单；幂等逻辑放在 Service 的事务里。`tryStart` 背后应该是 `user_id + idempotency_key` 唯一约束的插入占位，避免两个并发请求都先查不到结果然后同时创建订单。订单表自身也可以保留同样的唯一约束作为第二道防线。
 
 ## 常见反例
 

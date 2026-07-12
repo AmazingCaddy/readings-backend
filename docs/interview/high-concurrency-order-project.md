@@ -193,9 +193,10 @@ create table orders (
   sku_id varchar(64) not null,
   quantity int not null,
   status varchar(32) not null,
+  idempotency_key varchar(128) not null,
   created_at timestamp not null,
   updated_at timestamp not null,
-  unique (user_id, sku_id)
+  unique (user_id, idempotency_key)
 );
 
 create table inventory (
@@ -206,6 +207,8 @@ create table inventory (
   updated_at timestamp not null
 );
 ```
+
+如果业务规则是“一个活动里一个用户只能买一次”，再额外增加 `activity_id`，并建立 `unique (user_id, activity_id)`。不要直接用 `unique (user_id, sku_id)` 作为通用订单约束，否则会限制用户以后再次购买同一个商品。
 
 库存最终兜底 SQL：
 

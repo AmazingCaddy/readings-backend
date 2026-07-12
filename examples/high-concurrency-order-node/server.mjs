@@ -32,8 +32,13 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
+function scopedIdempotencyKey(userId, idempotencyKey) {
+  return `${userId}:${idempotencyKey}`;
+}
+
 function createOrderCommand({ userId, skuId, quantity, idempotencyKey }) {
-  const existing = state.idempotency.get(idempotencyKey);
+  const idemKey = scopedIdempotencyKey(userId, idempotencyKey);
+  const existing = state.idempotency.get(idemKey);
   if (existing) {
     state.metrics.duplicates += 1;
     return { duplicate: true, result: existing };
@@ -43,15 +48,15 @@ function createOrderCommand({ userId, skuId, quantity, idempotencyKey }) {
   if (available < quantity) {
     state.metrics.soldOut += 1;
     const result = { status: 'SOLD_OUT', skuId };
-    state.idempotency.set(idempotencyKey, result);
+    state.idempotency.set(idemKey, result);
     return { duplicate: false, result };
   }
 
   state.stock.set(skuId, available - quantity);
   const orderToken = `ord_${randomUUID()}`;
   const result = { status: 'QUEUED', orderToken, skuId };
-  state.idempotency.set(idempotencyKey, result);
-  state.queue.push({ orderToken, userId, skuId, quantity, idempotencyKey });
+  state.idempotency.set(idemKey, result);
+  state.queue.push({ orderToken, userId, skuId, quantity, idemKey });
   state.metrics.accepted += 1;
   return { duplicate: false, result };
 }
@@ -70,7 +75,7 @@ function workerTick() {
       createdAt: new Date().toISOString(),
     };
     state.orders.set(command.orderToken, order);
-    state.idempotency.set(command.idempotencyKey, {
+    state.idempotency.set(command.idemKey, {
       status: 'CREATED',
       orderToken: command.orderToken,
       skuId: command.skuId,
@@ -79,7 +84,7 @@ function workerTick() {
   } catch (error) {
     const current = state.stock.get(command.skuId) ?? 0;
     state.stock.set(command.skuId, current + command.quantity);
-    state.idempotency.set(command.idempotencyKey, {
+    state.idempotency.set(command.idemKey, {
       status: 'FAILED',
       reason: error.message,
     });
