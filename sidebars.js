@@ -73,6 +73,7 @@ const sidebars = {
         'algorithms/snowflake-id',
         'algorithms/consistent-hashing',
         'algorithms/bloom-filter',
+        'algorithms/rate-limit-algorithms',
       ],
     },
     {
