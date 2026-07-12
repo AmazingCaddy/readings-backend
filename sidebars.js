@@ -79,6 +79,13 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: '微服务与服务治理',
+      items: [
+        'microservices/service-boundaries',
+      ],
+    },
+    {
+      type: 'category',
       label: '工程配方',
       items: [
         'recipes/redis-key-design',
