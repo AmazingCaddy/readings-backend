@@ -9,6 +9,17 @@ import TabItem from '@theme/TabItem';
 
 大表深分页是典型性能问题。`OFFSET` 越大，数据库需要扫描并丢弃的行越多。高频列表接口应优先使用 cursor-based pagination。
 
+## 先理解这些概念
+
+- **分页**：一次只返回一部分数据，比如每页 20 条。
+- **Offset 分页**：跳过前 N 条再取数据，页数越深越慢。
+- **深分页**：offset 很大，例如第 10000 页，数据库要扫描并丢弃大量行。
+- **Cursor 分页**：用上一页最后一条记录的位置继续查下一页。
+- **稳定排序**：排序字段必须能确定唯一顺序，常用 `created_at + id`。
+- **组合索引**：让过滤条件和排序字段一起走索引。
+
+读这篇时先记住：分页慢通常不是“返回 20 条慢”，而是“为了找到这 20 条，数据库扫了很多没返回的行”。
+
 ```mermaid
 flowchart LR
     A[OFFSET pagination] --> B[Scan offset + page_size rows]
@@ -189,6 +200,18 @@ sequenceDiagram
 - cursor 是否防篡改或可校验？
 - 是否限制后台跳页和导出规模？
 - 是否用 explain 验证执行计划？
+
+## 这篇文章在系统里怎么用
+
+分页优化常用于订单列表、消息列表、Feed、评论、后台导出。高频用户列表和无限滚动应该优先用 cursor 分页；后台低频跳页可以保留 offset，但要限制最大页数。
+
+系统设计时，提到列表查询要继续说明：按什么字段排序，cursor 里放什么，是否有对应组合索引，新增数据时会不会重复或漏数据。
+
+## 术语回看
+
+- [游标分页](../system-design/glossary.md#游标分页)
+- [P99](../system-design/glossary.md#p99)
+- [读写分离](../system-design/glossary.md#读写分离)
 
 ## 延伸阅读
 
