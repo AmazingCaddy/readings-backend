@@ -71,6 +71,7 @@ const sidebars = {
       label: '工程配方',
       items: [
         'recipes/redis-key-design',
+        'recipes/idempotency-key-design',
       ],
     },
     {
