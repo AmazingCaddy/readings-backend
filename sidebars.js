@@ -73,6 +73,7 @@ const sidebars = {
         'system-design/order-system',
         'system-design/weibo-feed-system',
         'system-design/train-ticket-system',
+        'system-design/flash-sale-system',
         'practice/high-concurrency-order-system',
       ],
     },
