@@ -75,6 +75,7 @@ const sidebars = {
         'recipes/database-index-design',
         'recipes/mq-topic-message-key-design',
         'recipes/outbox-table-design',
+        'recipes/order-state-machine-design',
       ],
     },
     {
