@@ -74,6 +74,7 @@ const sidebars = {
         'recipes/idempotency-key-design',
         'recipes/database-index-design',
         'recipes/mq-topic-message-key-design',
+        'recipes/outbox-table-design',
       ],
     },
     {
