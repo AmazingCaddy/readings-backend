@@ -13,7 +13,7 @@ slug: /
 - **为什么需要它**：解释它解决的是哪类工程压力。
 - **它解决什么问题**：把问题拆成可识别的线上症状。
 - **核心原理**：用流程图、时序图或状态图解释机制。
-- **最小示例**：用 Java、Go、TypeScript、Python 给出可迁移的实现片段。
+- **最小示例**：基础专题提供 Java、Go、TypeScript、Python 等实现片段；系统设计和面试路径侧重 SQL、伪代码、时序图和回答模板。
 - **工程实践**：讨论超时、重试、幂等、监控、降级等边界。
 - **常见坑**：列出真实系统里容易踩的问题。
 - **完整案例**：用一个业务场景把知识点串起来。
@@ -44,8 +44,16 @@ slug: /
     <p>用压测、P99、日志、指标、链路追踪、SLO 和告警定位瓶颈。</p>
   </div>
   <div className="learning-card">
-    <h3>6. 系统设计实践</h3>
-    <p>通过订单系统和高并发下单案例把状态机、库存、支付和异步事件组合起来。</p>
+    <h3>6. 工程配方</h3>
+    <p>把 Redis Key、幂等 Key、索引、Topic、Outbox、状态机、限流和告警设计成可照抄的模板。</p>
+  </div>
+  <div className="learning-card">
+    <h3>7. 系统设计实践</h3>
+    <p>通过订单、支付、秒杀、购票、Feed、通知、评论点赞、IM 等案例学习不同系统的取舍。</p>
+  </div>
+  <div className="learning-card">
+    <h3>8. 后端面试路径</h3>
+    <p>用 30 天计划、问答模板、排障案例和可运行项目，把知识转成面试表达和作品集。</p>
   </div>
 </div>
 
@@ -109,9 +117,45 @@ slug: /
 目标是把前面的机制组合成完整业务系统。系统设计不是堆技术名词，而是说明状态、边界、失败模式和恢复路径。
 
 - [订单系统设计](./system-design/order-system.md)
+- [秒杀系统设计](./system-design/flash-sale-system.md)
+- [支付系统设计](./system-design/payment-system.md)
+- [火车票购票系统设计](./system-design/train-ticket-system.md)
+- [微博 Feed 系统设计](./system-design/weibo-feed-system.md)
+- [通知中心系统设计](./system-design/notification-system.md)
+- [评论点赞系统设计](./system-design/comment-like-system.md)
+- [即时聊天系统设计](./system-design/instant-messaging-system.md)
+- [短链接系统设计](./system-design/short-url-system.md)
 - [高并发下单系统设计](./practice/high-concurrency-order-system.md)
 
 阶段产出：能设计一个高并发下单链路，说明库存如何扣减、支付回调如何幂等、订单事件如何可靠发布、热点和限流如何处理、系统如何观测和恢复。
+
+## 第六阶段：工程配方
+
+目标是把常见后端设计从“知道概念”推进到“知道怎么落地”。这部分更像开发前的模板库：命名怎么定、key 怎么写、表怎么建、常见坑怎么兜底。
+
+- [Redis Key 设计](./recipes/redis-key-design.md)
+- [幂等 Key 设计](./recipes/idempotency-key-design.md)
+- [数据库索引设计](./recipes/database-index-design.md)
+- [MQ Topic / Message Key 设计](./recipes/mq-topic-message-key-design.md)
+- [Outbox 表设计](./recipes/outbox-table-design.md)
+- [订单状态机设计](./recipes/order-state-machine-design.md)
+- [限流规则设计](./recipes/rate-limit-rule-design.md)
+- [监控指标与告警设计](./recipes/metrics-alerting-design.md)
+
+阶段产出：能为一个下单、支付或通知链路写出 Redis key、幂等 key、数据库索引、MQ topic、Outbox 表和告警规则。
+
+## 第七阶段：后端面试准备
+
+目标是把知识转成面试能用的表达、排障思路和作品集项目。对缺少后端实战经验的读者，这一阶段应该反复复盘，而不是只读一遍。
+
+- [30 天后端面试计划](./interview/backend-interview-30-day-plan.md)
+- [后端 API 与项目分层基础](./interview/backend-api-layering.md)
+- [数据库建模与事务并发实战](./interview/database-modeling-concurrency.md)
+- [后端面试问答模板](./interview/backend-interview-qa.md)
+- [线上排障案例](./interview/production-troubleshooting.md)
+- [可运行项目：高并发订单系统](./interview/high-concurrency-order-project.md)
+
+阶段产出：能用 15 分钟讲清楚一个高并发订单项目，包括 API、表结构、幂等、库存、MQ、Outbox、压测指标和线上排障。
 
 ## 学习方法
 

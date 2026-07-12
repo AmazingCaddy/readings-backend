@@ -84,6 +84,7 @@ const sidebars = {
       type: 'category',
       label: '后端面试路径',
       items: [
+        'interview/backend-interview-30-day-plan',
         'interview/backend-api-layering',
         'interview/database-modeling-concurrency',
         'interview/backend-interview-qa',
