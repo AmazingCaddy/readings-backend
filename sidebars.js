@@ -111,6 +111,7 @@ const sidebars = {
         'collaboration/read-write-splitting-cache',
         'collaboration/cdc-search-index-sync',
         'collaboration/multi-level-cache',
+        'collaboration/sharding-collaboration',
         'collaboration/database-mq-outbox',
         'collaboration/async-result-return',
         'collaboration/worker-mq-consumption',
