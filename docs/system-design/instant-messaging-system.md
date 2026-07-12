@@ -207,6 +207,207 @@ stateDiagram-v2
 
 即时聊天系统要先把连接层和消息层拆开。WebSocket Gateway 负责连接、心跳和推送，消息服务负责幂等、分配会话序号、落库和发布投递事件。发送端用 `client_msg_id` 防重复，同一会话用递增 `seq` 保证展示顺序。消息落库后通过 Outbox + MQ 投递，在线用户走网关推送，离线用户更新 inbox 并发 Push。ACK 可以丢，所以投递至少一次，客户端按 `message_id` 和 `seq` 去重。小群可以写扩散更新成员 inbox，大群更适合读扩散。
 
+## 深挖：长连接和消息可靠性
+
+### 业务边界和澄清问题
+
+即时聊天系统要先明确是“强实时 IM”还是“站内私信”。两者对连接和可靠性的要求不同。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| 是否必须 WebSocket？ | 决定是否维护长连接 | 强实时用 WebSocket，弱实时可轮询 |
+| 单聊、群聊还是万人大群？ | 决定 fanout 策略 | 小群写扩散，大群读扩散 |
+| 消息是否必须严格有序？ | 决定 seq 粒度 | 通常只保证会话内有序 |
+| 支持多少设备在线？ | 决定 connection 模型 | user_id 下有多个 device connection |
+| 已读回执是否实时？ | 决定 ACK 压力 | 可批量、可降级 |
+
+这里按单聊 + 普通群聊 + 大群的通用 IM 设计：WebSocket 在线推送，离线可补拉和 Push，会话内有序，不要求全局有序。
+
+### 容量估算
+
+假设：
+
+```text
+DAU：20,000,000
+同时在线：2,000,000
+每用户平均设备连接：1.3
+总 WebSocket 连接：2,600,000
+消息发送峰值：50,000 msg/s
+普通群平均成员：50
+大群成员：100,000+
+```
+
+推导：
+
+- 连接网关按连接数扩容，而不是只按 QPS 扩容。
+- 如果单机承载 50,000 连接，2,600,000 连接需要至少 52 台网关，实际还要预留容量。
+- 小群 50 人写扩散可以接受；10 万人大群同步写 inbox 会产生巨大写放大。
+- 消息写库 QPS 是发送消息数；投递 QPS 是消息数乘以在线接收设备数。
+
+### 连接网关和 Presence
+
+连接网关应尽量无业务状态，只维护连接和推送通道。用户连接信息写入 Presence Store：
+
+```text
+im:conn:{user_id} -> set(gateway_id:connection_id:device_id)
+im:gateway:{gateway_id}:heartbeat -> timestamp
+im:device:{user_id}:{device_id} -> last_seen_at
+```
+
+连接建立流程：
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as WebSocket Gateway
+    participant A as Auth Service
+    participant R as Presence Redis
+
+    C->>G: connect with token
+    G->>A: verify token
+    A-->>G: user_id and device_id
+    G->>R: add connection mapping
+    G-->>C: connected
+    C->>G: heartbeat periodically
+    G->>R: refresh connection TTL
+```
+
+网关宕机时，连接 TTL 会过期。客户端重连后带上 `last_ack_seq`，服务端按会话补拉缺失消息。
+
+### 消息 ID、Seq 和幂等
+
+三个 ID 不要混用：
+
+| 字段 | 谁生成 | 作用 |
+| --- | --- | --- |
+| `client_msg_id` | 客户端 | 发送重试幂等 |
+| `message_id` | 服务端 | 全局唯一消息标识 |
+| `seq` | 服务端按会话分配 | 会话内排序和补拉 |
+
+表结构可以这样设计：
+
+```sql
+create table messages (
+  message_id varchar(64) primary key,
+  conversation_id varchar(64) not null,
+  sender_id varchar(64) not null,
+  client_msg_id varchar(128) not null,
+  seq bigint not null,
+  content text not null,
+  status varchar(32) not null,
+  created_at timestamp not null,
+  unique (conversation_id, sender_id, client_msg_id),
+  unique (conversation_id, seq)
+);
+
+create table conversation_seq (
+  conversation_id varchar(64) primary key,
+  next_seq bigint not null
+);
+```
+
+分配 seq 可以用数据库行、Redis `INCR` 或专门的序号服务。热门大群要避免单点瓶颈，可以按会话分片或使用专门序号分配器。
+
+### ACK、已读和离线补拉
+
+ACK 至少分两类：
+
+- **送达 ACK**：客户端收到消息。
+- **已读 ACK**：用户打开会话看到消息。
+
+不要每条消息都强同步更新数据库，可以按会话维护进度：
+
+```sql
+create table message_progress (
+  user_id varchar(64) not null,
+  conversation_id varchar(64) not null,
+  delivered_seq bigint not null,
+  read_seq bigint not null,
+  updated_at timestamp not null,
+  primary key (user_id, conversation_id)
+);
+```
+
+离线补拉流程：
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as Gateway
+    participant M as Message Service
+    participant DB as Message DB
+
+    C->>G: reconnect with last_ack_seq=120
+    G->>M: fetch missing messages after 120
+    M->>DB: select seq > 120 order by seq limit 100
+    DB-->>M: messages 121..180
+    M-->>G: missing messages
+    G-->>C: push batch
+    C-->>G: ack delivered_seq=180
+```
+
+### 小群和大群策略
+
+小群可以写扩散：消息发送后更新每个成员的 inbox，用户会话列表读取很快。
+
+大群更适合读扩散：消息只写群消息表，成员打开群时按 seq 拉取。否则 10 万人大群每发一条消息都写 10 万个 inbox，成本过高。
+
+| 场景 | 策略 | 原因 |
+| --- | --- | --- |
+| 单聊 | 写双方 inbox | 读会话列表快 |
+| 小群 | 写扩散到成员 inbox | 成员数有限 |
+| 大群 | 读扩散 | 避免巨大写放大 |
+| 系统广播 | 批次任务或读时合并 | 避免一次写全量用户 |
+
+### 故障场景深挖
+
+| 故障 | 表现 | 处理 |
+| --- | --- | --- |
+| 发送请求超时 | 客户端不知道是否成功 | 用 `client_msg_id` 重试，服务端返回同一消息 |
+| MQ 投递重复 | 客户端收到重复消息 | 客户端按 `message_id` 去重 |
+| ACK 丢失 | 服务端以为未送达 | 允许重推，客户端幂等 |
+| 网关宕机 | 在线连接断开 | Presence TTL 过期，客户端重连补拉 |
+| seq 缺口 | 客户端看到 122 但缺 121 | 暂存后续消息，拉取缺口 |
+| 大群消息积压 | 投递延迟增加 | 降级已读回执，读扩散拉取正文 |
+
+### 监控指标
+
+```text
+im_gateway_connections{gateway_id}
+im_gateway_heartbeat_timeout_total
+im_message_send_qps
+im_message_store_latency_ms
+im_delivery_lag_messages
+im_client_ack_delay_ms
+im_missing_seq_fetch_total
+im_push_fail_total{provider}
+```
+
+这些指标能回答：连接是否稳定、消息是否写入慢、投递是否积压、客户端 ACK 是否延迟、是否频繁补拉缺口。
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 站内私信 | HTTP 轮询 + 消息表 + 未读数 |
+| 实时单聊 | WebSocket Gateway + Presence + 离线补拉 |
+| 群聊 | 会话 seq、小群写扩散、大群读扩散 |
+| 多端同步 | device 维度连接、read_seq 同步、冲突处理 |
+| 大规模 IM | 网关分区、专用消息存储、跨地域路由、热点大群隔离 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先说明只保证会话内有序，不保证全局有序。
+2. 连接层和消息层拆开，WebSocket Gateway 只管连接和推送。
+3. Presence 记录 user 到 gateway connection 的映射，TTL 心跳保证故障自动清理。
+4. 发送消息用 `client_msg_id` 幂等，服务端分配 `message_id` 和会话内 `seq`。
+5. 消息先落库，再通过 Outbox/MQ 投递。
+6. 在线用户推 WebSocket，离线用户靠 Push 和上线补拉。
+7. ACK 丢失允许重推，客户端按 `message_id/seq` 去重。
+8. 小群写扩散，大群读扩散，避免写放大。
+
 ## 术语回看
 
 - [Fanout](./glossary.md#fanout)
