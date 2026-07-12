@@ -71,6 +71,7 @@ const sidebars = {
       label: '系统设计与项目实践',
       items: [
         'system-design/order-system',
+        'system-design/weibo-feed-system',
         'practice/high-concurrency-order-system',
       ],
     },
