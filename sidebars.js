@@ -88,6 +88,7 @@ const sidebars = {
         'interview/database-modeling-concurrency',
         'interview/backend-interview-qa',
         'interview/production-troubleshooting',
+        'interview/high-concurrency-order-project',
       ],
     },
     {
