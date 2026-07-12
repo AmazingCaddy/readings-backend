@@ -74,6 +74,7 @@ const sidebars = {
         'algorithms/consistent-hashing',
         'algorithms/bloom-filter',
         'algorithms/rate-limit-algorithms',
+        'algorithms/lease-fencing-token',
       ],
     },
     {
