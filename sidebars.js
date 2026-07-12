@@ -85,6 +85,7 @@ const sidebars = {
       label: '组件协作模式',
       items: [
         'collaboration/redis-database-consistency',
+        'collaboration/database-mq-outbox',
       ],
     },
     {
