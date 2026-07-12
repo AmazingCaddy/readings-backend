@@ -171,6 +171,201 @@ stateDiagram-v2
 
 微博 Feed 可以先讲混合 fanout。fanout 就是“把一条微博分发给很多粉丝”。普通用户发文走写扩散，把微博 ID 异步写入粉丝时间线；大 V 发文不全量扩散，读首页时把大 V 最近微博和用户时间线合并。正文和权限以 Post DB 为准，时间线只存引用。分页用 cursor，热点微博和计数用缓存，发布事件用 Outbox + MQ 保证可靠分发。删除和权限变化通过读时过滤加后台清理保证最终一致。
 
+## 深挖：混合 Fanout 怎么落地
+
+### 业务边界和澄清问题
+
+Feed 系统面试要先澄清“首页 Feed”还是“推荐 Feed”。这两类系统差别很大。
+
+| 问题 | 为什么要问 | 对设计的影响 |
+| --- | --- | --- |
+| Feed 是关注流还是推荐流？ | 关注流可解释性强，推荐流依赖排序模型 | 关注关系 + fanout，或召回排序系统 |
+| 是否要求严格时间序？ | 决定 cursor 和排序字段 | 时间线按 `created_at/post_id`，推荐按 score |
+| 发文后多久要可见？ | 决定同步还是异步 fanout | 秒级最终一致通常可接受 |
+| 大 V 粉丝量级是多少？ | 决定写扩散阈值 | 超阈值走读扩散 |
+| 删除和权限变更多久生效？ | 决定读时过滤和异步清理 | 权限以 Post DB 为准 |
+
+这里按关注流设计：用户首页主要展示关注对象发布的微博，允许秒级延迟，不做复杂推荐排序。
+
+### 容量估算
+
+假设：
+
+```text
+DAU：50,000,000
+平均关注数：300
+日发文用户：5,000,000
+日发文量：20,000,000
+首页刷新峰值：200,000 QPS
+普通用户粉丝中位数：200
+大 V 粉丝：1,000,000 到 100,000,000
+```
+
+推导：
+
+- 首页刷新远高于发文，所以大部分用户适合写扩散，换取读快。
+- 大 V 一条微博不能写入千万粉丝 timeline，否则写放大会拖垮 MQ 和存储。
+- Timeline 只存 post id，不存正文，避免重复存大对象。
+- 首页第一页必须缓存或预计算，因为它是最高频读取。
+
+### 数据模型和存储选择
+
+关注关系：
+
+```sql
+create table follows (
+  follower_id bigint not null,
+  followee_id bigint not null,
+  created_at timestamp not null,
+  primary key (follower_id, followee_id)
+);
+
+create index idx_follows_followee
+on follows(followee_id, follower_id);
+```
+
+微博正文：
+
+```sql
+create table posts (
+  post_id bigint primary key,
+  author_id bigint not null,
+  content text not null,
+  visibility varchar(32) not null,
+  created_at timestamp not null
+);
+
+create index idx_posts_author_created
+on posts(author_id, created_at desc, post_id desc);
+```
+
+Timeline Store 可以是 Redis ZSet、宽表或 KV。概念上保存：
+
+```text
+home_timeline:{user_id} -> ZSet(score=created_at_or_rank, value=post_id)
+user_posts:{author_id} -> ZSet(score=created_at, value=post_id)
+feed:first_page:{user_id} -> cached hydrated feed cards, TTL 10s-60s
+post:detail:{post_id} -> post snapshot
+post:counter:{post_id} -> like/comment/repost count
+celebrity:authors -> set(author_id)
+```
+
+MQ Topic：
+
+```text
+post.created
+post.deleted
+post.visibility_changed
+feed.fanout.normal
+feed.fanout.retry
+```
+
+### 混合 fanout 策略
+
+常见策略不是二选一，而是按作者粉丝数分层：
+
+| 作者类型 | 粉丝数 | 策略 |
+| --- | --- | --- |
+| 普通用户 | `< 10,000` | 写扩散到粉丝首页 timeline |
+| 中等用户 | `10,000 - 1,000,000` | 分批写扩散，低优先级补齐 |
+| 大 V | `> 1,000,000` | 不全量写扩散，读首页时合并其最近微博 |
+
+写扩散流程：
+
+```mermaid
+sequenceDiagram
+    participant P as Post Service
+    participant MQ as Fanout MQ
+    participant W as Fanout Worker
+    participant F as Follow Store
+    participant T as Timeline Store
+
+    P->>MQ: PostCreated(author_id, post_id)
+    MQ-->>W: consume event
+    W->>F: scan followers by followee_id
+    W->>T: batch append post_id to home_timeline
+    W->>W: record fanout progress cursor
+```
+
+大 V 读扩散流程：
+
+```mermaid
+flowchart TD
+    A[Read home feed] --> B[Read precomputed timeline]
+    A --> C[Read followed celebrity authors]
+    C --> D[Load recent celebrity posts]
+    B --> E[Merge by score]
+    D --> E
+    E --> F[Filter visibility and block list]
+    F --> G[Return page with cursor]
+```
+
+### 读首页的合并算法
+
+读首页不能每次把 300 个关注者全查一遍。可以这样做：
+
+1. 先读用户预计算 timeline 的前 N 条 post id。
+2. 查用户关注的大 V 列表，通常数量较少。
+3. 拉取这些大 V 最近一小段微博，例如每人 5 到 20 条。
+4. 按 `score, post_id` 合并排序。
+5. 批量查询正文、作者、计数和权限。
+6. 过滤不可见内容，数量不够再补拉。
+
+Cursor 建议包含最后一条的 `score + post_id`，不要用 offset：
+
+```text
+cursor = base64({score: 1783846400, post_id: 900001})
+```
+
+### 删除、屏蔽和权限变化
+
+Timeline 里只存 post id，所以删除微博时不用强制同步删除所有 timeline。更稳的是：
+
+- 先把 `posts.visibility` 改成 `HIDDEN`。
+- Feed 读取时批量校验可见性。
+- 后台异步清理 timeline 引用。
+- 对热点删除事件，提高异步清理优先级。
+
+```mermaid
+flowchart LR
+    A[Delete post] --> B[Mark visibility HIDDEN]
+    B --> C[Publish PostDeleted]
+    C --> D[Async cleanup timelines]
+    B --> E[Read-time visibility filter]
+```
+
+### 故障和补偿
+
+| 故障 | 表现 | 处理 |
+| --- | --- | --- |
+| Fanout worker 失败 | 部分粉丝首页缺微博 | 记录 follower cursor，按分片重试 |
+| MQ 积压 | 首页更新时间变慢 | 降级推荐插入，优先普通发文 fanout |
+| Timeline 写入部分成功 | 部分用户可见，部分不可见 | fanout progress 表 + 补偿扫描 |
+| 大 V 热点读取 | 大 V 最近微博 key 很热 | 本地缓存、读副本、短 TTL 快照 |
+| 删除后仍可见 | timeline 残留 post id | 读时权限过滤兜底 |
+
+### 演进路线
+
+| 阶段 | 设计重点 |
+| --- | --- |
+| 小规模 | 读扩散即可，按关注列表合并最近微博 |
+| 中规模 | 普通用户写扩散，首页 timeline 预计算 |
+| 大规模 | 混合 fanout，大 V 读扩散，timeline 分布式存储 |
+| 超大规模 | 多级缓存、分区域存储、推荐插入、冷热分层、专用 Feed 服务 |
+
+### 10 分钟面试表达
+
+可以按这个顺序讲：
+
+1. 先说明是关注流，不是推荐流。
+2. 做容量估算：首页读多，发文写少，但大 V 写放大严重。
+3. 数据模型：posts、follows、user_posts、home_timeline。
+4. 普通用户发文走写扩散，大 V 走读扩散。
+5. 首页读取合并预计算 timeline 和大 V 最近微博。
+6. Timeline 只存 post id，正文和权限以 Post DB 为准。
+7. 删除和权限变化通过读时过滤兜底，异步清理 timeline。
+8. 监控 fanout lag、首页 P99、timeline 写失败、热点 post 读取、MQ 积压。
+
 ## 术语回看
 
 - [读扩散 / 写扩散](./glossary.md#读扩散--写扩散)
