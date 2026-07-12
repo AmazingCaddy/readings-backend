@@ -9,6 +9,17 @@ import TabItem from '@theme/TabItem';
 
 Outbox Pattern 用来解决“业务数据库写入成功，但消息发送失败”的一致性问题。它把业务数据和待发送消息写入同一个本地事务，再由后台发布器把 outbox 表里的事件投递到消息队列。
 
+## 先理解这些概念
+
+- **本地事务**：同一个数据库里的多次写入一起提交或一起回滚。
+- **业务表**：真正保存业务状态的表，比如订单表。
+- **Outbox 表**：和业务表在同一个数据库里，保存“待发送消息”。
+- **发布器 Publisher**：后台任务，读取 outbox 表并发送到 MQ。
+- **至少一次发布**：消息可能重复发，但不能轻易丢。
+- **消费者幂等**：下游收到重复消息时，业务结果只生效一次。
+
+读这篇时先记住：Outbox 不追求数据库和 MQ 同时强一致提交，而是先把“要发的消息”可靠写进数据库，再慢慢发出去。
+
 ```mermaid
 sequenceDiagram
     participant API as Order API
@@ -290,6 +301,19 @@ loop:
 - outbox 表是否有适合 `status`、`next_retry_at`、`created_at` 的索引？
 - 是否有重试退避、死信、归档和告警？
 - 是否定义了事件顺序要求，例如同一 `aggregate_id` 使用同一个 MQ key？
+
+## 这篇文章在系统里怎么用
+
+Outbox 常用于订单创建、支付成功、退款成功、库存变化这类“数据库状态变了，必须通知其他系统”的场景。它解决的是数据库提交成功但 MQ 发送失败的问题。
+
+系统设计时，提到 Outbox 要继续说明：业务表和 outbox 表在同一个事务写入，发布器如何重试，消息可能重复，下游如何幂等，outbox 堆积如何告警和清理。
+
+## 术语回看
+
+- [Outbox](../system-design/glossary.md#outbox)
+- [最终一致性](../system-design/glossary.md#最终一致性)
+- [幂等](../system-design/glossary.md#幂等)
+- [DLQ](../system-design/glossary.md#dlq)
 
 ## 延伸阅读
 
