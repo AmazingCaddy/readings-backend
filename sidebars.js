@@ -82,6 +82,13 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: '后端面试路径',
+      items: [
+        'interview/backend-api-layering',
+      ],
+    },
+    {
+      type: 'category',
       label: '系统设计与项目实践',
       items: [
         'system-design/glossary',
