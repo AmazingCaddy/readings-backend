@@ -82,6 +82,13 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: '组件协作模式',
+      items: [
+        'collaboration/redis-database-consistency',
+      ],
+    },
+    {
+      type: 'category',
       label: '后端面试路径',
       items: [
         'interview/backend-interview-30-day-plan',
