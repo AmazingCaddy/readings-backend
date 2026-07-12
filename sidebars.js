@@ -85,6 +85,7 @@ const sidebars = {
         'microservices/api-gateway-bff',
         'microservices/service-discovery-config',
         'microservices/service-call-governance',
+        'microservices/saga-tcc',
       ],
     },
     {
