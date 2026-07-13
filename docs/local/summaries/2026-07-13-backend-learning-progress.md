@@ -17,6 +17,8 @@ Help the user study backend engineering articles from a frontend/client backgrou
   - *Rationale:* The user explicitly wants guided, exploratory learning with targeted explanations rather than one-way lecturing.
 - **Decision:** Preserve the user's short answers and also record the fuller reasoning behind them.
   - *Rationale:* The user often answers briefly, but wants the longer explanation, boundaries, and follow-up reasoning captured for later review.
+- **Decision:** Keep `docs/study-progress.md` as a lightweight overview and store detailed per-lesson notes under `docs/study/lessons/`.
+  - *Rationale:* The user noticed that keeping every lesson in one document would make it too large over time.
 
 ## Progress
 1. Explored the repository structure and confirmed it is a backend learning documentation site.
@@ -31,9 +33,10 @@ Help the user study backend engineering articles from a frontend/client backgrou
 10. Completed the first request-lifecycle review quiz. User correctly answered all five checks: network vs backend timing, trace span drill-down, DB connection pool vs SQL execution, P95/P99 for long-tail latency, and retry amplification risk.
 11. Completed the HTTP timeout and retry lesson review. User correctly explained timeout resource protection, separate timeout types, request budget splitting, retryable vs non-retryable errors, and idempotency for POST /orders retries.
 12. Completed the connection pool lesson review. User correctly explained connection reuse and downstream protection, why pools are not larger-is-better, causes of active=max with high pending, slow SQL reducing connection turnover, and why connection timeout must be disambiguated before blaming pool size.
+13. Split the large learning progress document into a lightweight overview plus per-lesson notes: `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, and `docs/study/lessons/03-connection-pool.md`. Added a sidebar category named `学习记录`.
 
 ## Technical Context
-- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`
+- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`, `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, `docs/study/lessons/03-connection-pool.md`
 - Files explored: `README.md`, `sidebars.js`, `docs/intro.md`, `docs/fundamentals/request-lifecycle.md`, `docs/fundamentals/http-timeout-retry.md`, `docs/fundamentals/connection-pool.md`
 - Dependencies: Docusaurus docs site
 

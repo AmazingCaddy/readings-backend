@@ -6,6 +6,15 @@ const sidebars = {
     'study-progress',
     {
       type: 'category',
+      label: '学习记录',
+      items: [
+        'study/lessons/request-lifecycle',
+        'study/lessons/http-timeout-retry',
+        'study/lessons/connection-pool',
+      ],
+    },
+    {
+      type: 'category',
       label: '基础机制',
       items: [
         'fundamentals/request-lifecycle',
