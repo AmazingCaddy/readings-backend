@@ -86,13 +86,16 @@ function updateProfile(userId, patch):
     commit
 
     cacheKey = "user:profile:" + userId
-    deleted = redis.delete(cacheKey)
-    if not deleted:
+    try:
+        redis.delete(cacheKey)
+    catch RedisError:
         insertCacheDeleteTask(cacheKey)
 
     redis.set("ryw:user:profile:" + userId, "1", ttl = 5 seconds)
     return OK
 ```
+
+`redis.delete` 返回 `0` 只代表 key 不存在，不代表删除失败；只有 Redis 异常或超时时才需要写删除补偿任务。
 
 ```pseudo
 function getProfile(userId):
@@ -103,6 +106,9 @@ function getProfile(userId):
     cached = redis.get(cacheKey)
     if cached exists:
         return cached
+
+    if redis.exists("user:profile:null:" + userId):
+        return null
 
     profile = replicaDb.query("select * from user_profiles where user_id = ?", userId)
     if profile exists:

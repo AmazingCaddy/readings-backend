@@ -90,6 +90,8 @@ commit;
 PostgreSQL / MySQL 8 可以使用 `skip locked` 思路：
 
 ```sql
+begin;
+
 select *
 from outbox_events
 where status = 'pending'
@@ -97,14 +99,22 @@ where status = 'pending'
 order by next_retry_at asc, id asc
 limit 100
 for update skip locked;
+
+update outbox_events
+set status = 'publishing', locked_by = ?, locked_until = now() + interval '2 minutes'
+where id in (...selected ids...);
+
+commit;
 ```
+
+这一步只负责短事务 claim，不要在持有数据库行锁时调用 MQ。发布器提交事务后再逐条发送 MQ，发送完成后回写结果。
 
 发送成功：
 
 ```sql
 update outbox_events
 set status = 'published', published_at = now(), updated_at = now()
-where id = ?;
+where id = ? and status = 'publishing';
 ```
 
 发送失败：
@@ -113,9 +123,12 @@ where id = ?;
 update outbox_events
 set retry_count = retry_count + 1,
     next_retry_at = ?,
+    status = 'pending',
     updated_at = now()
-where id = ?;
+where id = ? and status = 'publishing';
 ```
+
+还需要一个恢复任务把超时的 `publishing` 行改回 `pending`。否则发布器 claim 后宕机，这批事件会一直卡在 `publishing`。
 
 ## 反例
 

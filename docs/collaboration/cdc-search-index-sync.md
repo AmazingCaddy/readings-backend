@@ -108,14 +108,19 @@ function indexProductWorker(event):
         ack(event)
         return
 
-    current = search.get(index = "products", id = event.productId)
-    if current exists and current.rowVersion > product.rowVersion:
+    document = buildProductDocument(product)
+    updated = search.conditionalUpsert(
+        index = "products",
+        id = product.productId,
+        body = document,
+        condition = "existing is absent or existing.rowVersion < body.rowVersion"
+    )
+
+    if not updated:
+        # A newer database version has already reached the index.
         markConsumed(event.eventId)
         ack(event)
         return
-
-    document = buildProductDocument(product)
-    search.upsert(index = "products", id = product.productId, body = document)
 
     markConsumed(event.eventId)
     ack(event)
@@ -124,7 +129,7 @@ function indexProductWorker(event):
 关键点：
 
 - 用 `eventId` 做消费幂等。
-- 用 `rowVersion` 或 `updated_at` 抵挡旧事件覆盖新索引。
+- 用 `rowVersion` 或 `updated_at` 抵挡旧事件覆盖新索引。比较和写入必须在搜索引擎侧原子完成，例如 Elasticsearch/OpenSearch external versioning，或 scripted update 里判断 `ctx._source.rowVersion < params.rowVersion` 后再写。
 - 删除数据要同步 delete 或写入 `status=DELETED`，取决于查询是否需要历史。
 - 搜索失败不能 ack，应该重试或进入死信队列。
 

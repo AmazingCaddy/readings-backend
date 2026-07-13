@@ -184,8 +184,8 @@ func Transfer(ctx context.Context, db *sql.DB, fromID, toID int64, amount int64)
 }
 
 func lockAccount(ctx context.Context, tx *sql.Tx, id int64) error {
-    _, err := tx.ExecContext(ctx, `SELECT id FROM accounts WHERE id = ? FOR UPDATE`, id)
-    return err
+    var lockedID int64
+    return tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE id = ? FOR UPDATE`, id).Scan(&lockedID)
 }
 ```
 
@@ -199,7 +199,7 @@ export async function transfer(pool: Pool, fromId: string, toId: string, amount:
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const [first, second] = [fromId, toId].sort();
+    const [first, second] = [fromId, toId].sort((a, b) => Number(a) - Number(b));
     await lockAccount(client, first);
     await lockAccount(client, second);
 

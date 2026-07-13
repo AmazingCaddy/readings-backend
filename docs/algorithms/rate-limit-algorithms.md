@@ -57,17 +57,19 @@ function allow(userId):
     key = "rate:user:" + userId
     now = currentMillis()
     windowStart = now - 60000
+    member = now + ":" + generateRequestId()
 
-    redis.zremrangeByScore(key, 0, windowStart)
-    count = redis.zcard(key)
-
-    if count >= 60:
-        return false
-
-    redis.zadd(key, now, generateRequestId())
-    redis.expire(key, 2 minutes)
-    return true
+    return redis.evalLua(
+        key,
+        now,
+        windowStart,
+        member,
+        limit = 60,
+        ttlSeconds = 120
+    )
 ```
+
+Lua 脚本内部按顺序执行 `ZREMRANGEBYSCORE -> ZCARD -> ZADD -> EXPIRE`，整个脚本是原子的。不要在应用层分四次调用，否则两个并发请求可能都看到 `count < limit`，最终放过超过限制的请求。`member` 也要唯一，避免同一毫秒内多个请求覆盖同一个 ZSet 成员。
 
 优点：比固定窗口更平滑。
 

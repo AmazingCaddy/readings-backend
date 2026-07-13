@@ -95,7 +95,7 @@ function acquireLease(resourceId, ownerId):
         lease = select * from leases where resource_id = resourceId for update
 
         if lease is absent or lease.expire_at < now():
-            token = lease.last_token + 1
+            token = 1 if lease is absent else lease.last_token + 1
             upsert leases(
                 resource_id = resourceId,
                 owner_id = ownerId,
@@ -108,6 +108,8 @@ function acquireLease(resourceId, ownerId):
         rollback
         return null
 ```
+
+如果业务要求 token 在 lease 行被删除后仍然单调递增，不要依赖这行里的 `last_token`，而是单独维护一个不会删除的序列表或使用数据库 sequence。关键要求是：新 owner 拿到的 token 必须大于旧 owner。
 
 写资源时校验 token：
 

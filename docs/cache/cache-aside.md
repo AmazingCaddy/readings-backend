@@ -226,6 +226,7 @@ type Repository interface {
 }
 
 var ErrNotFound = errors.New("not found")
+var ErrCacheMiss = errors.New("cache miss")
 
 type Service struct {
     cache Cache
@@ -235,7 +236,7 @@ type Service struct {
 func (s Service) GetProduct(ctx context.Context, id int64) (Product, error) {
     key := cacheKey(id)
     cached, err := s.cache.Get(ctx, key)
-    if err == nil && cached != "" {
+    if err == nil {
         if cached == nullMarker {
             return Product{}, ErrNotFound
         }
@@ -244,6 +245,10 @@ func (s Service) GetProduct(ctx context.Context, id int64) (Product, error) {
             return Product{}, err
         }
         return product, nil
+    }
+    if !errors.Is(err, ErrCacheMiss) {
+        // Do not turn a Redis outage into unlimited database traffic.
+        return Product{}, err
     }
 
     product, err := s.repo.FindByID(ctx, id)

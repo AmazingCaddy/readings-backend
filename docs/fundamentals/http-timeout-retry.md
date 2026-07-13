@@ -139,8 +139,14 @@ public class RetryingHttpClient {
 
             try {
                 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                if (!shouldRetryStatus(response.statusCode()) || attempt == maxAttempts) {
+                if (!shouldRetryStatus(response.statusCode())) {
+                    if (response.statusCode() >= 400) {
+                        throw new IOException("http status " + response.statusCode());
+                    }
                     return response.body();
+                }
+                if (attempt == maxAttempts) {
+                    throw new IOException("retryable status after max attempts: " + response.statusCode());
                 }
             } catch (IOException e) {
                 if (attempt == maxAttempts) {

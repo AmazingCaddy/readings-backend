@@ -48,13 +48,13 @@ import TabItem from '@theme/TabItem';
 
 ## 核心原理
 
-一次请求进入系统后，应该创建或继承一个 trace id。这个 id 要贯穿日志、指标标签和下游请求头。
+一次请求进入系统后，应该创建或继承一个 trace id。这个 id 要贯穿日志、trace spans 和下游请求头；指标只在 exemplar 或采样链接里关联 trace id，不要把 trace id 放进普通 metrics label。
 
 ```mermaid
 flowchart LR
     A[Request enters API] --> B[Create or read trace_id]
     B --> C[Structured logs]
-    B --> D[Metrics labels]
+    B --> D[Metrics exemplars]
     B --> E[Trace spans]
     E --> F[Downstream request headers]
     F --> G[Next service continues trace]

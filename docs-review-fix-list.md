@@ -15,21 +15,21 @@ This file tracks correctness issues found during the full review of the backend 
 
 ## Medium Risk
 
-- [ ] `docs/collaboration/cdc-search-index-sync.md:111`: `search.get -> compare rowVersion -> upsert` is not atomic and can let stale data overwrite new data. Use Elasticsearch/OpenSearch external versioning or a conditional scripted update.
-- [ ] `docs/algorithms/rate-limit-algorithms.md:61`: Redis ZSet sliding window pseudo operations are not atomic. Wrap `ZREMRANGEBYSCORE`, `ZCARD`, `ZADD`, and `EXPIRE` in Lua or a transaction, and use unique members.
-- [ ] `docs/algorithms/lease-fencing-token.md:97`: when no lease row exists, the pseudo-code reads `lease.last_token + 1`. Use default token `1` or a separate monotonic sequence.
-- [ ] `docs/collaboration/redis-database-consistency.md:174`: treating Redis `DEL` return value `0` as delete failure is wrong because it can mean the key was already absent. Compensation should be triggered by Redis exception or timeout, not by deleted count `0`.
-- [ ] `docs/collaboration/read-write-splitting-cache.md:89`: same Redis `DEL == 0` issue.
-- [ ] `docs/collaboration/read-write-splitting-cache.md:69`: null marker key is defined but `getProfile` does not read it. Fix pseudo-code to check `user:profile:null:{user_id}` before querying DB.
-- [ ] `docs/collaboration/multi-level-cache.md:100`: cache rebuild lock uses a fixed value and direct delete, so one worker can delete another worker's lock. Use a random token plus Lua compare-and-delete unlock.
-- [ ] `docs/observability/logging-metrics-tracing.md:51`: text says trace id should flow through metrics labels, conflicting with the high-cardinality warning. Trace id belongs in logs, traces, and exemplars, not normal metric labels.
+- [x] `docs/collaboration/cdc-search-index-sync.md:111`: `search.get -> compare rowVersion -> upsert` is not atomic and can let stale data overwrite new data. Use Elasticsearch/OpenSearch external versioning or a conditional scripted update.
+- [x] `docs/algorithms/rate-limit-algorithms.md:61`: Redis ZSet sliding window pseudo operations are not atomic. Wrap `ZREMRANGEBYSCORE`, `ZCARD`, `ZADD`, and `EXPIRE` in Lua or a transaction, and use unique members.
+- [x] `docs/algorithms/lease-fencing-token.md:97`: when no lease row exists, the pseudo-code reads `lease.last_token + 1`. Use default token `1` or a separate monotonic sequence.
+- [x] `docs/collaboration/redis-database-consistency.md:174`: treating Redis `DEL` return value `0` as delete failure is wrong because it can mean the key was already absent. Compensation should be triggered by Redis exception or timeout, not by deleted count `0`.
+- [x] `docs/collaboration/read-write-splitting-cache.md:89`: same Redis `DEL == 0` issue.
+- [x] `docs/collaboration/read-write-splitting-cache.md:69`: null marker key is defined but `getProfile` does not read it. Fix pseudo-code to check `user:profile:null:{user_id}` before querying DB.
+- [x] `docs/collaboration/multi-level-cache.md:100`: cache rebuild lock uses a fixed value and direct delete, so one worker can delete another worker's lock. Use a random token plus Lua compare-and-delete unlock.
+- [x] `docs/observability/logging-metrics-tracing.md:51`: text says trace id should flow through metrics labels, conflicting with the high-cardinality warning. Trace id belongs in logs, traces, and exemplars, not normal metric labels.
 - [x] `docs/system-design/payment-system.md:237`: `unique(channel, channel_trade_no)` with nullable `channel_trade_no` may allow multiple NULL values. Make it non-null after known, or use a partial unique index where `channel_trade_no is not null`.
-- [ ] `docs/database/database-locks.md:186`: Go code uses `ExecContext` for `SELECT ... FOR UPDATE`; use `QueryRowContext` and scan the row.
-- [ ] `docs/database/database-locks.md:202`: TypeScript `[fromId, toId].sort()` sorts lexicographically by default and can produce the wrong numeric lock order. Use numeric or canonical comparison.
+- [x] `docs/database/database-locks.md:186`: Go code uses `ExecContext` for `SELECT ... FOR UPDATE`; use `QueryRowContext` and scan the row.
+- [x] `docs/database/database-locks.md:202`: TypeScript `[fromId, toId].sort()` sorts lexicographically by default and can produce the wrong numeric lock order. Use numeric or canonical comparison.
 
 ## Low Risk
 
-- [ ] `docs/fundamentals/http-timeout-retry.md:141`: Java retry sample can return a final `429` or `503` response as if it succeeded. Throw on final retryable status or check `>= 400` before returning.
-- [ ] `docs/cache/cache-aside.md:237`: Redis errors are treated like cache misses and fall through to DB, which can amplify DB load during Redis outages. Distinguish miss from Redis error and use degradation, fail-fast, or limited fallback.
-- [ ] `docs/recipes/outbox-table-design.md:92`: `FOR UPDATE SKIP LOCKED` publisher transaction boundary is unclear. Use a short transaction to claim rows, publish outside the transaction, mark result afterward, and recover stale `publishing` rows.
-- [ ] `docs/system-design/instant-messaging-system.md:303`: Redis `INCR` allocates sequence before DB insert, so DB insert failure can create permanent sequence gaps. Mention that gaps must be tolerated with client gap timeout, or allocate sequence in the DB transaction / sequence service with retry semantics.
+- [x] `docs/fundamentals/http-timeout-retry.md:141`: Java retry sample can return a final `429` or `503` response as if it succeeded. Throw on final retryable status or check `>= 400` before returning.
+- [x] `docs/cache/cache-aside.md:237`: Redis errors are treated like cache misses and fall through to DB, which can amplify DB load during Redis outages. Distinguish miss from Redis error and use degradation, fail-fast, or limited fallback.
+- [x] `docs/recipes/outbox-table-design.md:92`: `FOR UPDATE SKIP LOCKED` publisher transaction boundary is unclear. Use a short transaction to claim rows, publish outside the transaction, mark result afterward, and recover stale `publishing` rows.
+- [x] `docs/system-design/instant-messaging-system.md:303`: Redis `INCR` allocates sequence before DB insert, so DB insert failure can create permanent sequence gaps. Mention that gaps must be tolerated with client gap timeout, or allocate sequence in the DB transaction / sequence service with retry semantics.

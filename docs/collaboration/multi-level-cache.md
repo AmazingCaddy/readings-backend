@@ -98,14 +98,20 @@ function getProductBase(skuId):
         return redisValue
 
     lockKey = "lock:rebuild:" + key
-    if redis.setNx(lockKey, "1", ttl = 3 seconds):
+    lockToken = randomUuid()
+    if redis.setNx(lockKey, lockToken, ttl = 3 seconds):
         try:
             product = database.query("select * from products where sku_id = ?", skuId)
             redis.set(key, product, ttl = 30 minutes + randomJitter())
             localCache.set(key, product, ttl = 5 seconds)
             return product
         finally:
-            redis.delete(lockKey)
+            redis.evalLua("""
+                if redis.call('get', KEYS[1]) == ARGV[1] then
+                    return redis.call('del', KEYS[1])
+                end
+                return 0
+            """, keys = [lockKey], args = [lockToken])
 
     sleep(50 milliseconds)
     return redis.get(key) or queryDatabaseWithRateLimit(skuId)

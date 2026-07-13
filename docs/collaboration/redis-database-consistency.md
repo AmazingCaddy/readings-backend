@@ -171,10 +171,13 @@ function updateDbThenSetCache(productId, newValue):
 function updateProduct(productId, newValue):
     database.update(productId, newValue)
 
-    success = redis.delete("product:" + productId)
-    if not success:
+    try:
+        redis.delete("product:" + productId)
+    catch RedisError:
         retryQueue.publish(CacheDeleteCommand("product:" + productId))
 ```
+
+Redis `DEL` 返回 `0` 不一定是失败，它也可能表示 key 本来就不存在。补偿任务应该在 Redis 超时、连接异常、命令失败这类“不知道是否删除成功”的情况下触发，而不是因为删除数量为 `0` 就触发。
 
 后台重试：
 
