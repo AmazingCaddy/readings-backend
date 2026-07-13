@@ -3,6 +3,7 @@
 const sidebars = {
   tutorialSidebar: [
     'intro',
+    'study-progress',
     {
       type: 'category',
       label: '基础机制',
