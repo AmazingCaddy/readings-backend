@@ -12,6 +12,7 @@ const sidebars = {
         'study/lessons/http-timeout-retry',
         'study/lessons/connection-pool',
         'study/lessons/index-and-slow-query',
+        'study/lessons/transaction-isolation',
       ],
     },
     {

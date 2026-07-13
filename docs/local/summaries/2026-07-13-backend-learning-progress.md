@@ -35,14 +35,15 @@ Help the user study backend engineering articles from a frontend/client backgrou
 12. Completed the connection pool lesson review. User correctly explained connection reuse and downstream protection, why pools are not larger-is-better, causes of active=max with high pending, slow SQL reducing connection turnover, and why connection timeout must be disambiguated before blaming pool size.
 13. Split the large learning progress document into a lightweight overview plus per-lesson notes: `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, and `docs/study/lessons/03-connection-pool.md`. Added a sidebar category named `学习记录`.
 14. Completed the database index and slow query lesson review. User correctly explained why indexes are not more-is-better, low-selectivity fields like `is_deleted`, deep OFFSET pagination, cursor pagination tradeoffs, and the composite index `(user_id, status, created_at DESC, id DESC)` for order lists.
+15. Completed the transaction isolation lesson review. User correctly explained dirty reads, non-repeatable reads, phantom reads, why select-then-update is unsafe for stock, why conditional update prevents overselling, why duplicate order prevention needs unique constraints/idempotency, and why transactions should be short.
 
 ## Technical Context
-- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`, `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, `docs/study/lessons/03-connection-pool.md`, `docs/study/lessons/04-index-and-slow-query.md`
+- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`, `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, `docs/study/lessons/03-connection-pool.md`, `docs/study/lessons/04-index-and-slow-query.md`, `docs/study/lessons/05-transaction-isolation.md`
 - Files explored: `README.md`, `sidebars.js`, `docs/intro.md`, `docs/fundamentals/request-lifecycle.md`, `docs/fundamentals/http-timeout-retry.md`, `docs/fundamentals/connection-pool.md`
 - Dependencies: Docusaurus docs site
 
 ## Open Questions
-- Continue to `docs/database/transaction-isolation.md` next, because the user has completed the first database performance topic and should now learn database concurrency and consistency basics.
+- Continue to `docs/database/database-locks.md` next, because the user has completed transaction isolation and should now learn row locks, lock waits, deadlocks, and lock-related troubleshooting.
 
 ## Blockers
 (none currently)

@@ -70,6 +70,7 @@ title: 我的后端学习档案
 | [第二课：HTTP 超时与重试](./study/lessons/02-http-timeout-retry.md) | [HTTP 超时与重试](./fundamentals/http-timeout-retry.md) | 已复盘 | 掌握 timeout、retry、backoff、jitter、重试预算和幂等 |
 | [第三课：连接池](./study/lessons/03-connection-pool.md) | [连接池](./fundamentals/connection-pool.md) | 已复盘 | 掌握连接池不是越大越好、连接池等待和慢 SQL 的关系 |
 | [第四课：数据库索引与慢查询](./study/lessons/04-index-and-slow-query.md) | [数据库索引与慢查询](./database/index-and-slow-query.md) | 已复盘 | 掌握复合索引、EXPLAIN、深分页和 cursor pagination |
+| [第五课：事务隔离级别](./study/lessons/05-transaction-isolation.md) | [事务隔离级别](./database/transaction-isolation.md) | 已复盘 | 掌握并发异常、条件更新、唯一索引、短事务和事务重试 |
 
 ## 实战项目计划
 
@@ -118,8 +119,8 @@ title: 我的后端学习档案
 
 | 日期 | 学习内容 | 产出 | 下一步 |
 | --- | --- | --- | --- |
-| 2026-07-13 | 明确学习背景：前端/客户端转后端，需要实战，最终服务于面试 | 建立学习档案；完成请求生命周期、HTTP 超时与重试、连接池、数据库索引与慢查询四节课复盘 | 下一课学习事务隔离级别 |
+| 2026-07-13 | 明确学习背景：前端/客户端转后端，需要实战，最终服务于面试 | 建立学习档案；完成请求生命周期、HTTP 超时与重试、连接池、数据库索引与慢查询、事务隔离级别五节课复盘 | 下一课学习数据库锁 |
 
 ## 下一步
 
-下一课建议进入 [事务隔离级别](./database/transaction-isolation.md)，继续补数据库并发和一致性基础。
+下一课建议进入 [数据库锁](./database/database-locks.md)，继续补行锁、间隙锁、死锁和锁等待排查。
