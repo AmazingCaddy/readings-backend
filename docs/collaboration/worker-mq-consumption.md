@@ -79,6 +79,8 @@ function consume(message):
         ack(message)
 ```
 
+注意：`retryLater` 和 `sendToDlq` 都必须先确认新消息已经写入 retry topic 或 DLQ，才能 ack 原消息。如果写 retry/DLQ 失败后仍然 ack，原消息会从 MQ 消失，后续也没有任何 worker 能继续处理。
+
 ## 为什么这样做
 
 如果业务事务已经提交，但 ack 失败，MQ 会重新投递消息。消费者再次收到消息时，去重表会命中，然后直接 ack，不会重复执行业务。
@@ -197,14 +199,20 @@ function retryLater(message):
     message.retryCount += 1
 
     if message.retryCount > 10:
-        sendToDlq(message)
+        ok = sendToDlq(message)
+        if not ok:
+            throw RetryPublishFailed
         ack(message)
         return
 
     delay = min(2 ^ message.retryCount seconds, 5 minutes)
-    mq.republishWithDelay(message, delay)
+    ok = mq.republishWithDelay(message, delay)
+    if not ok:
+        throw RetryPublishFailed
     ack(message)
 ```
+
+这里故意让 `RetryPublishFailed` 抛出。这样原消息不会被 ack，MQ 会按自己的可见性超时或重投递机制再次投递，避免“新消息没发出去、老消息又被确认”的丢消息窗口。
 
 ## DLQ 和重放
 

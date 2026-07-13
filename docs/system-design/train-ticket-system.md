@@ -255,19 +255,40 @@ create table seat_locks (
 );
 ```
 
-如果用户买 B 到 D，就要扣减所有被覆盖的小区间，例如 B-C、C-D。条件更新必须全部成功，否则回滚。
+如果用户买 B 到 D，就要扣减所有被覆盖的小区间，例如 B-C、C-D。实际实现通常会把站点映射成序号，库存表里存 `segment_index`，避免直接比较站名。条件更新必须覆盖所有目标小区间，且影响行数等于期望区间数，否则回滚。
 
 ```sql
 update train_segments
 set available = available - 1, version = version + 1
 where train_id = ?
   and seat_type = ?
-  and from_station >= ?
-  and to_station <= ?
+  and segment_index >= ?
+  and segment_index < ?
   and available > 0;
 ```
 
-实际实现通常会把站点映射成序号，避免直接比较站名。
+```pseudo
+function deductSegments(trainId, seatType, fromIndex, toIndex):
+    expected = toIndex - fromIndex
+
+    begin transaction
+        affected = update train_segments
+                   set available = available - 1, version = version + 1
+                   where train_id = trainId
+                     and seat_type = seatType
+                     and segment_index >= fromIndex
+                     and segment_index < toIndex
+                     and available > 0
+
+        if affected != expected:
+            rollback
+            return SOLD_OUT
+
+        insert seat_locks(...)
+    commit
+```
+
+不能只判断 SQL 是否执行成功。比如 B-D 需要扣 B-C、C-D 两段，如果只有一段库存大于 0，数据库会更新 1 行；此时必须回滚，否则会出现部分区间被扣、订单却不能成立的脏状态。
 
 ### Redis Key 和 MQ Topic
 

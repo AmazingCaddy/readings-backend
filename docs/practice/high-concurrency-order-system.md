@@ -79,22 +79,24 @@ sequenceDiagram
     participant C as Client
     participant API as Order API
     participant R as Redis
-    participant MQ as MQ
+    participant DB as Request DB
+    participant O as Outbox
     participant W as Order Worker
-    participant DB as MySQL
+    participant ODB as MySQL
 
     C->>API: POST /orders {skuId, requestId}
     API->>R: SET idem:{requestId} PROCESSING NX EX 600
     API->>R: rate limit user + sku
     API->>R: DECR stock:sku:1001
     alt stock remains >= 0
-        API->>MQ: Publish CreateOrder command
+        API->>DB: Insert request_status QUEUED
+        API->>O: Insert CreateOrder outbox
         API-->>C: 202 Accepted {orderToken}
-        MQ->>W: Consume CreateOrder
-        W->>DB: Begin transaction
-        W->>DB: Insert order with unique(user_id, activity_id)
-        W->>DB: Insert inventory deduction / outbox
-        W->>DB: Commit
+        O-->>W: Publish then consume CreateOrder
+        W->>ODB: Begin transaction
+        W->>ODB: Insert order with unique(user_id, activity_id)
+        W->>ODB: Insert inventory deduction / outbox
+        W->>ODB: Commit
     else stock < 0
         API->>R: INCR stock:sku:1001
         API->>R: SET idem:{requestId} SOLD_OUT
@@ -121,7 +123,7 @@ stateDiagram-v2
 
 ## 最小示例
 
-下面示例只展示下单入口的核心逻辑：幂等占位、限流、Redis 预扣减、MQ 入队、失败时补偿库存。完整工程还需要 worker、数据库事务、对账任务、状态查询接口和监控。
+下面示例只展示下单入口的核心逻辑：幂等占位、限流、Redis 预扣减、写请求状态和 outbox、失败时补偿库存。生产系统不要在 `DECR` 成功后直接同步发 MQ 再返回，因为进程可能在扣减库存后、MQ 发布前崩溃，导致资格被扣掉但后台永远没有创建订单命令。
 
 <Tabs groupId="language">
   <TabItem value="java" label="Java">
@@ -141,17 +143,19 @@ interface RedisClient {
 }
 
 interface RateLimiter { boolean allow(String key); }
-interface MessageQueue { void publish(CreateOrderCommand command); }
+interface OrderRequestStore {
+    void accept(OrderRequest request, String orderToken, CreateOrderCommand command);
+}
 
 public class OrderApi {
     private final RedisClient redis;
     private final RateLimiter limiter;
-    private final MessageQueue queue;
+    private final OrderRequestStore store;
 
-    public OrderApi(RedisClient redis, RateLimiter limiter, MessageQueue queue) {
+    public OrderApi(RedisClient redis, RateLimiter limiter, OrderRequestStore store) {
         this.redis = redis;
         this.limiter = limiter;
-        this.queue = queue;
+        this.store = store;
     }
 
     public OrderAccepted submit(OrderRequest request) {
@@ -175,7 +179,8 @@ public class OrderApi {
 
         String orderToken = "ord_" + request.requestId();
         try {
-            queue.publish(new CreateOrderCommand(request.userId(), request.skuId(), request.requestId(), orderToken));
+            CreateOrderCommand command = new CreateOrderCommand(request.userId(), request.skuId(), request.requestId(), orderToken);
+            store.accept(request, orderToken, command); // one DB transaction: request_status + outbox
             redis.set(idemKey, "QUEUED:" + orderToken, Duration.ofMinutes(10));
             return new OrderAccepted(orderToken);
         } catch (RuntimeException e) {
@@ -220,12 +225,14 @@ type RedisClient interface {
 }
 
 type RateLimiter interface { Allow(ctx context.Context, key string) bool }
-type Queue interface { Publish(ctx context.Context, command CreateOrderCommand) error }
+type OrderRequestStore interface {
+    Accept(ctx context.Context, req OrderRequest, token string, command CreateOrderCommand) error
+}
 
 type API struct {
     redis   RedisClient
     limiter RateLimiter
-    queue   Queue
+    store   OrderRequestStore
 }
 
 func (a API) Submit(ctx context.Context, req OrderRequest) (string, error) {
@@ -253,7 +260,7 @@ func (a API) Submit(ctx context.Context, req OrderRequest) (string, error) {
 
     token := "ord_" + req.RequestID
     command := CreateOrderCommand{UserID: req.UserID, SkuID: req.SkuID, RequestID: req.RequestID, OrderToken: token}
-    if err := a.queue.Publish(ctx, command); err != nil {
+    if err := a.store.Accept(ctx, req, token, command); err != nil {
         _ = a.redis.Increment(ctx, stockKey)
         _ = a.redis.Set(ctx, idemKey, "FAILED", 10*time.Minute)
         return "", err
@@ -283,13 +290,15 @@ type RedisClient = {
 };
 
 type RateLimiter = { allow(key: string): Promise<boolean> };
-type Queue = { publish(command: CreateOrderCommand): Promise<void> };
+type OrderRequestStore = {
+  accept(request: OrderRequest, orderToken: string, command: CreateOrderCommand): Promise<void>;
+};
 
 export class OrderApi {
   constructor(
     private readonly redis: RedisClient,
     private readonly limiter: RateLimiter,
-    private readonly queue: Queue,
+    private readonly store: OrderRequestStore,
   ) {}
 
   async submit(request: OrderRequest): Promise<{ orderToken: string }> {
@@ -314,7 +323,7 @@ export class OrderApi {
 
     const orderToken = `ord_${request.requestId}`;
     try {
-      await this.queue.publish({ ...request, orderToken });
+      await this.store.accept(request, orderToken, { ...request, orderToken });
       await this.redis.set(idemKey, `QUEUED:${orderToken}`, 600);
       return { orderToken };
     } catch (error) {
@@ -360,15 +369,15 @@ class RateLimiter(Protocol):
     def allow(self, key: str) -> bool: ...
 
 
-class Queue(Protocol):
-    def publish(self, command: CreateOrderCommand) -> None: ...
+class OrderRequestStore(Protocol):
+    def accept(self, request: OrderRequest, order_token: str, command: CreateOrderCommand) -> None: ...
 
 
 class OrderApi:
-    def __init__(self, redis: RedisClient, limiter: RateLimiter, queue: Queue):
+    def __init__(self, redis: RedisClient, limiter: RateLimiter, store: OrderRequestStore):
         self.redis = redis
         self.limiter = limiter
-        self.queue = queue
+        self.store = store
 
     def submit(self, request: OrderRequest) -> str:
         idem_key = f"idem:order:{request.request_id}"
@@ -388,7 +397,8 @@ class OrderApi:
 
         order_token = f"ord_{request.request_id}"
         try:
-            self.queue.publish(CreateOrderCommand(request.user_id, request.sku_id, request.request_id, order_token))
+            command = CreateOrderCommand(request.user_id, request.sku_id, request.request_id, order_token)
+            self.store.accept(request, order_token, command)
             self.redis.set(idem_key, f"QUEUED:{order_token}", ttl_seconds=600)
             return order_token
         except Exception:

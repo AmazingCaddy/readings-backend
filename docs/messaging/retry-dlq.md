@@ -89,6 +89,8 @@ class Consumer {
             process(msg);
             msg.ack();
         } catch (PermanentException e) {
+            // Only ack after the DLQ publish is confirmed. If this publish fails,
+            // let the exception escape so the broker can redeliver the original message.
             dlq.publish(msg, e);
             msg.ack();
         } catch (TransientException e) {
@@ -115,10 +117,14 @@ func Handle(msg Message, retry Publisher, dlq Publisher) error {
         return msg.Ack()
     }
     if !IsRetryable(err) || msg.Attempts >= 5 {
-        _ = dlq.Publish(msg.WithError(err))
+        if publishErr := dlq.Publish(msg.WithError(err)); publishErr != nil {
+            return publishErr // do not ack; let the broker redeliver the original
+        }
         return msg.Ack()
     }
-    _ = retry.Publish(msg.WithDelay(Backoff(msg.Attempts)))
+    if publishErr := retry.Publish(msg.WithDelay(Backoff(msg.Attempts))); publishErr != nil {
+        return publishErr // do not ack; otherwise the message is lost
+    }
     return msg.Ack()
 }
 ```

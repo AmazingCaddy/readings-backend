@@ -88,13 +88,23 @@ flowchart TD
 ```java
 class PaymentService {
     PaymentResult create(CreatePayment cmd, String key) {
+        String requestHash = hash(cmd);
         IdempotencyRecord existing = repo.find(key);
-        if (existing != null && existing.isSucceeded()) {
-            return existing.result();
+        if (existing != null) {
+            if (!existing.requestHash().equals(requestHash)) {
+                throw new IllegalArgumentException("same idempotency key with different request");
+            }
+            if (existing.isSucceeded()) {
+                return existing.result();
+            }
+            throw new ConflictException("request is still processing");
         }
 
         return tx.execute(() -> {
-            repo.insertIfAbsent(key, hash(cmd));
+            boolean inserted = repo.insertIfAbsent(key, requestHash);
+            if (!inserted) {
+                throw new ConflictException("request is already processing");
+            }
             Payment payment = payments.create(cmd.amount(), cmd.userId());
             PaymentResult result = PaymentResult.from(payment);
             repo.markSucceeded(key, result);
@@ -111,14 +121,25 @@ class PaymentService {
 package idempotency
 
 func CreatePayment(db DB, cmd Command, key string) (Result, error) {
-    if record, ok := db.FindIdempotency(key); ok && record.Succeeded {
-        return record.Result, nil
+    requestHash := Hash(cmd)
+    if record, ok := db.FindIdempotency(key); ok {
+        if record.RequestHash != requestHash {
+            return Result{}, ErrIdempotencyKeyReused
+        }
+        if record.Succeeded {
+            return record.Result, nil
+        }
+        return Result{}, ErrStillProcessing
     }
 
     var result Result
     err := db.WithTx(func(tx Tx) error {
-        if err := tx.InsertIdempotencyIfAbsent(key, Hash(cmd)); err != nil {
+        inserted, err := tx.InsertIdempotencyIfAbsent(key, requestHash)
+        if err != nil {
             return err
+        }
+        if !inserted {
+            return ErrStillProcessing
         }
         payment, err := tx.CreatePayment(cmd.UserID, cmd.Amount)
         if err != nil {
@@ -136,11 +157,19 @@ func CreatePayment(db DB, cmd Command, key string) (Result, error) {
 
 ```ts
 async function createPayment(db: Database, cmd: Command, key: string) {
-  const existing = await db.idempotency.findSucceeded(key);
-  if (existing) return existing.response;
+  const requestHash = hash(cmd);
+  const existing = await db.idempotency.find(key);
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      throw new Error('same idempotency key with different request');
+    }
+    if (existing.status === 'succeeded') return existing.response;
+    throw new Error('request is still processing');
+  }
 
   return db.transaction(async (tx) => {
-    await tx.idempotency.insertIfAbsent({ key, requestHash: hash(cmd) });
+    const inserted = await tx.idempotency.insertIfAbsent({ key, requestHash });
+    if (!inserted) throw new Error('request is already processing');
     const payment = await tx.payments.create({ userId: cmd.userId, amount: cmd.amount });
     const response = { paymentId: payment.id };
     await tx.idempotency.markSucceeded(key, response);
@@ -154,12 +183,19 @@ async function createPayment(db: Database, cmd: Command, key: string) {
 
 ```python
 async def create_payment(db, cmd: dict, key: str) -> dict:
-    existing = await db.idempotency.find_succeeded(key)
+    request_hash = hash_request(cmd)
+    existing = await db.idempotency.find(key)
     if existing:
-        return existing["response"]
+        if existing["request_hash"] != request_hash:
+            raise ValueError("same idempotency key with different request")
+        if existing["status"] == "succeeded":
+            return existing["response"]
+        raise ConflictError("request is still processing")
 
     async with db.transaction() as tx:
-        await tx.idempotency.insert_if_absent(key, hash_request(cmd))
+        inserted = await tx.idempotency.insert_if_absent(key, request_hash)
+        if not inserted:
+            raise ConflictError("request is already processing")
         payment = await tx.payments.create(cmd["user_id"], cmd["amount"])
         response = {"payment_id": payment["id"]}
         await tx.idempotency.mark_succeeded(key, response)

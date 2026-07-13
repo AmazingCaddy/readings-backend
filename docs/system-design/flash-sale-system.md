@@ -82,24 +82,29 @@ flowchart TD
 
 ## 关键流程时序图
 
-抢购请求只做轻量判断和 Redis 原子预扣，成功后进入队列异步创建订单。轻量判断包括活动时间、用户资格、风控 token、是否重复抢购。
+抢购请求只做轻量判断和 Redis 原子预扣，成功后先写入请求状态和 outbox，再由 outbox publisher 可靠进入队列异步创建订单。轻量判断包括活动时间、用户资格、风控 token、是否重复抢购。
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant API as Seckill API
     participant R as Redis
+    participant DB as Request DB
+    participant O as Outbox
     participant MQ as MQ
     participant W as Order Worker
-    participant DB as Order DB
+    participant ODB as Order DB
 
     U->>API: POST /seckill
     API->>API: validate time, token, risk
     API->>R: Lua check dedupe and decrement stock
     R-->>API: accepted
-    API->>MQ: enqueue create order
+    API->>DB: insert request_status QUEUED
+    API->>O: insert CreateOrder command
     API-->>U: processing token
-    W->>DB: create PendingPayment order idempotently
+    O->>MQ: publish command with producer confirm
+    MQ->>W: consume command
+    W->>ODB: create PendingPayment order idempotently
     W-->>U: result available by polling
 ```
 
@@ -139,7 +144,8 @@ stateDiagram-v2
 
 ## 失败场景与补偿
 
-- Redis 预扣成功但 MQ 发送失败：使用本地 outbox 或可靠队列生产确认；失败时回补库存。
+- Redis 预扣成功但 outbox 写入失败：本次请求不能返回已接收，需要回补 Redis 库存并标记失败。
+- Outbox 写入成功但 MQ 发送失败：publisher 重试；如果长期失败，由扫描任务告警并继续发布，不要让请求静默卡死。
 - Worker 创建订单失败：记录失败原因，回补库存并清理用户占用。
 - 支付超时：关单任务条件更新订单状态，释放库存或进入候补池。
 - Redis 库存和 DB 不一致：活动结束后按库存流水对账，必要时人工修正。

@@ -114,11 +114,22 @@ sequenceDiagram
 
     C->>CB: payment success callback
     CB->>CB: verify signature
+    CB->>DB: validate amount, currency, merchant_order_id, payment_id, trade_no
     CB->>DB: insert callback event if absent
     CB->>DB: update Paying -> Succeeded
     CB->>DB: insert accounting entry and outbox
     CB->>MQ: publish PaymentSucceeded by outbox
 ```
+
+验签只证明“请求来自渠道且内容未被篡改”，不等于这笔回调可以直接把支付单改成成功。状态推进前还必须校验：
+
+- `merchant_order_id` 和本地支付单一致。
+- `payment_id` 或本地请求号能匹配到唯一支付单。
+- `amount`、`currency` 与本地支付单完全一致。
+- `channel_trade_no` 没有绑定到另一笔支付。
+- 渠道回调状态确实是成功终态，而不是处理中或失败通知。
+
+如果金额、币种或订单号不一致，不能更新为 `Succeeded`。应该记录异常回调，进入差错/人工处理或自动查单流程。
 
 ## 一致性与状态机
 
@@ -245,6 +256,11 @@ create table payment_attempts (
   unique (channel, channel_request_no),
   unique (channel, channel_trade_no)
 );
+
+-- 如果数据库允许多个 NULL 通过唯一约束，使用部分唯一索引：
+-- create unique index uk_attempt_channel_trade_no
+-- on payment_attempts(channel, channel_trade_no)
+-- where channel_trade_no is not null;
 
 create table payment_callbacks (
   channel varchar(32) not null,

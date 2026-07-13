@@ -36,9 +36,9 @@ flowchart LR
 
 ```text
 1. API 校验参数和幂等键
-2. Redis 设置幂等占位 PROCESSING
+2. Redis 设置幂等占位 PROCESSING，失败时先读 Redis 状态，再按幂等键查 DB
 3. Redis 原子预扣库存
-4. 数据库写 request_status = QUEUED 和 outbox command
+4. 数据库在同一事务里写 order_requests = QUEUED 和 outbox command
 5. 返回 202 Accepted + orderToken
 6. Outbox publisher 发送 CreateOrderCommand
 7. Worker 消费 MQ
@@ -61,8 +61,8 @@ sequenceDiagram
 
     C->>API: POST /orders Idempotency-Key
     API->>R: set idem PROCESSING and decr stock
-    API->>DB: insert request status QUEUED
-    API->>O: insert CreateOrderCommand event
+    API->>DB: insert request status QUEUED with skuId
+    API->>O: insert CreateOrderCommand with orderToken and skuId
     API-->>C: 202 {orderToken}
     O-->>MQ: publish command
     MQ-->>W: consume command
@@ -98,6 +98,17 @@ function submitOrder(request):
 
     started = redis.setNx(idemKey, "PROCESSING", ttl = 10 minutes)
     if not started:
+        cached = redis.get(idemKey)
+        if cached starts with "QUEUED:":
+            token = cached.removePrefix("QUEUED:")
+            return 202, queryRequestByToken(token)
+        if cached == "SOLD_OUT":
+            return 409, { "status": "SOLD_OUT" }
+        if cached == "PROCESSING":
+            existing = queryRequestByIdempotencyKey(request.userId, request.idempotencyKey)
+            if existing exists:
+                return 200, existing
+            return 202, { "status": "PROCESSING" }
         existing = queryRequestByIdempotencyKey(request.userId, request.idempotencyKey)
         return 200, existing
 
@@ -113,13 +124,19 @@ function submitOrder(request):
                 order_token = orderToken,
                 user_id = request.userId,
                 idempotency_key = request.idempotencyKey,
+                sku_id = request.skuId,
                 status = "QUEUED"
             )
 
             insert outbox_events(
                 event_type = "CreateOrderCommand",
                 aggregate_id = orderToken,
-                payload = request
+                payload = {
+                    "orderToken": orderToken,
+                    "userId": request.userId,
+                    "skuId": request.skuId,
+                    "idempotencyKey": request.idempotencyKey
+                }
             )
         commit
 
@@ -133,6 +150,8 @@ function submitOrder(request):
 ```
 
 这里有一个关键点：Redis 预扣成功后，如果数据库事务失败，必须回补 Redis 库存。否则库存会少一份。
+
+另一个关键点是：Redis 只是快速挡重复请求和承接库存热点，用户最终可查询的状态要落在 `order_requests`。重复请求不能只查 DB，也不能只查 Redis；`PROCESSING` 期间 DB 记录可能还没写入，`SOLD_OUT` 也可能只在 Redis 里，所以重复分支要先识别 Redis 状态，再用 DB 权威记录补齐结果。
 
 ## Worker 伪代码
 
