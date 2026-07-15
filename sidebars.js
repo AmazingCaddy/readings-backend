@@ -13,6 +13,9 @@ const sidebars = {
         'study/lessons/connection-pool',
         'study/lessons/index-and-slow-query',
         'study/lessons/transaction-isolation',
+        'study/lessons/database-locks',
+        'study/lessons/pagination',
+        'study/lessons/cache-aside',
       ],
     },
     {

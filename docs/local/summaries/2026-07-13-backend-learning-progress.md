@@ -1,6 +1,6 @@
 # Conversation Summary: Backend Learning Progress
 **Date:** 2026-07-13
-**Last Updated:** 2026-07-13 00:00 Asia/Shanghai
+**Last Updated:** 2026-07-15 00:00 Asia/Shanghai
 **Status:** In Progress
 
 ## Objective
@@ -19,6 +19,8 @@ Help the user study backend engineering articles from a frontend/client backgrou
   - *Rationale:* The user often answers briefly, but wants the longer explanation, boundaries, and follow-up reasoning captured for later review.
 - **Decision:** Keep `docs/study-progress.md` as a lightweight overview and store detailed per-lesson notes under `docs/study/lessons/`.
   - *Rationale:* The user noticed that keeping every lesson in one document would make it too large over time.
+- **Decision:** After each lesson review, compare the lesson Q&A against the source article and update the original article when the user's questions reveal missing practical boundaries, interview follow-ups, or troubleshooting steps.
+  - *Rationale:* The user wants future learning to improve both personal lesson notes and the underlying backend study articles.
 
 ## Progress
 1. Explored the repository structure and confirmed it is a backend learning documentation site.
@@ -36,14 +38,19 @@ Help the user study backend engineering articles from a frontend/client backgrou
 13. Split the large learning progress document into a lightweight overview plus per-lesson notes: `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, and `docs/study/lessons/03-connection-pool.md`. Added a sidebar category named `学习记录`.
 14. Completed the database index and slow query lesson review. User correctly explained why indexes are not more-is-better, low-selectivity fields like `is_deleted`, deep OFFSET pagination, cursor pagination tradeoffs, and the composite index `(user_id, status, created_at DESC, id DESC)` for order lists.
 15. Completed the transaction isolation lesson review. User correctly explained dirty reads, non-repeatable reads, phantom reads, why select-then-update is unsafe for stock, why conditional update prevents overselling, why duplicate order prevention needs unique constraints/idempotency, and why transactions should be short.
+16. Completed the database locks lesson review. User correctly explained row update waiting, long transactions increasing lock wait, distinguishing lock wait from SQL execution and connection pool wait, deadlock caused by circular waiting, fixed lock ordering, finite whole-transaction retry after deadlock, index impact on lock range, and batch UPDATE lock troubleshooting.
+17. Completed the pagination optimization lesson review. User correctly explained deep OFFSET scanning, unstable sorting with non-unique `created_at`, cursor requiring all sort fields, composite indexes like `(product_id, created_at DESC, id DESC)`, cursor tradeoffs around arbitrary page jumps, avoiding OFFSET loops for large exports, opaque/signed cursor tokens, product tradeoffs for total pages, and using EXPLAIN plus P99 metrics to validate改造.
+18. Completed the Cache-Aside lesson review. User correctly explained read-heavy product detail caching, null marker caching for missing data, TTL tradeoffs, update-DB-then-delete-cache write path, short inconsistency windows, TTL jitter, Redis outage回源 protection, strong-consistency boundaries, key design and user-specific fields reducing hit rate.
+19. Updated the original Cache-Aside article based on the user's Q&A insights: added回源保护, key dimension design, version-control caveats for read/write races, Redis outage database protection, hit-rate troubleshooting, and clarified strong-consistency boundaries.
+20. Reviewed lessons 1-7 against their source articles and updated originals with the user's Q&A-derived gaps: client/server timing comparison, idempotency processing states, retry budget implementation, connection timeout disambiguation, pool sizing from total DB capacity, low-selectivity indexes, covering-index restraint, affected rows semantics, duplicate-order unique constraints, whole-transaction retry, lock-wait/pool-wait coupling, batch UPDATE lock troubleshooting, and deep-pagination design alternatives.
 
 ## Technical Context
-- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`, `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, `docs/study/lessons/03-connection-pool.md`, `docs/study/lessons/04-index-and-slow-query.md`, `docs/study/lessons/05-transaction-isolation.md`
-- Files explored: `README.md`, `sidebars.js`, `docs/intro.md`, `docs/fundamentals/request-lifecycle.md`, `docs/fundamentals/http-timeout-retry.md`, `docs/fundamentals/connection-pool.md`
+- Files modified: `docs/study-progress.md`, `sidebars.js`, `docs/local/summaries/2026-07-13-backend-learning-progress.md`, `docs/study/lessons/01-request-lifecycle.md`, `docs/study/lessons/02-http-timeout-retry.md`, `docs/study/lessons/03-connection-pool.md`, `docs/study/lessons/04-index-and-slow-query.md`, `docs/study/lessons/05-transaction-isolation.md`, `docs/study/lessons/06-database-locks.md`, `docs/study/lessons/07-pagination.md`, `docs/study/lessons/08-cache-aside.md`, `docs/cache/cache-aside.md`, `docs/fundamentals/request-lifecycle.md`, `docs/fundamentals/http-timeout-retry.md`, `docs/fundamentals/connection-pool.md`, `docs/database/index-and-slow-query.md`, `docs/database/transaction-isolation.md`, `docs/database/database-locks.md`, `docs/database/pagination.md`
+- Files explored: `README.md`, `sidebars.js`, `docs/intro.md`, `docs/fundamentals/request-lifecycle.md`, `docs/fundamentals/http-timeout-retry.md`, `docs/fundamentals/connection-pool.md`, `docs/database/database-locks.md`, `docs/database/pagination.md`, `docs/cache/cache-aside.md`
 - Dependencies: Docusaurus docs site
 
 ## Open Questions
-- Continue to `docs/database/database-locks.md` next, because the user has completed transaction isolation and should now learn row locks, lock waits, deadlocks, and lock-related troubleshooting.
+- Continue to `docs/cache/cache-breakdown.md` next to learn cache breakdown/hot key protection, or first turn Cache-Aside into an interview answer set.
 
 ## Blockers
 (none currently)

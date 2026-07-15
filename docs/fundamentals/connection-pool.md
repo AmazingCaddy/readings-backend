@@ -17,6 +17,7 @@ import TabItem from '@theme/TabItem';
 - **池等待**：连接都被占用时，新请求只能等待空闲连接。
 - **池耗尽**：连接池长期没有空闲连接，请求开始排队、超时或失败。
 - **连接泄漏**：代码借了连接但没有归还，池里的可用连接越来越少。
+- **connection timeout**：一个容易混淆的错误名，可能指池等待超时、建连超时，也可能指查询或网络等待超时。
 
 读这篇时先记住：连接池不是越大越好。池太小会排队，池太大会把数据库或下游打满。
 
@@ -240,6 +241,8 @@ def find_product_name(pool: SimpleConnectionPool, product_id: int) -> str | None
 
 不要每个服务实例都配置 100 个数据库连接。如果有 20 个实例，每个 100 个连接，就是 2,000 个数据库连接。数据库可能在连接建立上还没出问题，已经在调度和内存上被拖垮。
 
+估算时要先看数据库希望承受的总应用连接数，再除以服务实例数，并给其他服务、后台任务、运维连接和扩容留余量。例如数据库最多希望承受 200 个应用连接，Product API 有 10 个实例，理论平均是每实例 20 个；实际配置可能控制在 15 到 20，而不是每个实例都拍脑袋设成 30 或 100。
+
 ### 2. 等待超时要短于入口预算
 
 如果入口 API 总预算是 500 ms，连接池等待超时不能设置成 1 s。池满时应该快速失败、降级或限流，而不是排队到入口超时。
@@ -256,11 +259,16 @@ def find_product_name(pool: SimpleConnectionPool, product_id: int) -> str | None
 
 至少监控：active connections、idle connections、pending/waiting requests、connection acquire time、connection timeout count、connection creation count、query duration。池指标要和慢 SQL、DB CPU、DB lock wait 一起看。
 
+### 6. 先澄清 connection timeout 发生在哪一段
+
+日志里的 `connection timeout` 不能直接等价于“连接池太小”。它可能是等待池里空闲连接超时，也可能是新建 TCP/TLS 连接超时，或者客户端库把查询/read timeout 包装成 connection timeout。排查时要先看异常类型、trace span 和客户端库指标，确认是 pool wait、connect、read/query 还是网络问题。只有确认是池等待超时后，才继续按 active、idle、pending、连接泄漏、长事务、慢 SQL 和数据库容量排查。
+
 ## 常见坑
 
 - 池太小导致请求大量等待，却误以为是业务代码慢。
 - 池太大导致数据库连接数爆炸，把问题推给数据库。
 - 没有连接等待超时，池满后请求一直挂住。
+- 看到 `connection timeout` 就直接判断连接池太小，没有区分 pool wait、connect timeout 和 read/query timeout。
 - 查询超时缺失，慢 SQL 长时间占住连接。
 - 异常路径忘记归还连接，流量一高连接池耗尽。
 - HTTP client 不复用连接，每次调用都重新握手。
@@ -296,6 +304,7 @@ flowchart TD
 - 连接池为什么能降低延迟？为什么不是越大越好？
 - 池等待超时、查询超时、入口超时之间有什么关系？
 - 如何根据实例数和数据库容量估算池大小？
+- 日志里出现 `connection timeout` 时，为什么要先确认 timeout 发生在哪一段？
 - 池耗尽时如何区分慢查询、连接泄漏和流量过高？
 - 为什么下游变慢会导致 API P99 升高？
 - 应该监控哪些连接池指标？
