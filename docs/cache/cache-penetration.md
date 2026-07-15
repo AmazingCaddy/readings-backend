@@ -294,9 +294,15 @@ def get_product(product_id: int, cache: Cache, repository: Repository, bloom: Bl
 
 null marker 能挡住重复空查询，但 TTL 不能太长。否则某个商品刚创建后，用户还可能读到旧的空缓存。常见 TTL 是几十秒到几分钟，并根据业务创建频率调整。
 
+空值缓存也不能无限写。随机 ID 扫描时，每个不存在 key 可能只访问一次，写入大量 null marker 反而会污染 Redis、占用内存。工程上通常只给通过参数校验和 Bloom Filter 的 key 写空值缓存，并监控 null marker 数量和写入速率；对异常来源要限流，而不是把每个随机 ID 都写进 Redis。
+
 ### 3. Bloom Filter 要有更新策略
 
 商品创建后要把 id 加入 Bloom Filter。删除场景要谨慎：普通 Bloom Filter 不支持删除，可以接受误判，或使用 Counting Bloom Filter、定期重建、按分片重建。
+
+如果 Bloom Filter 通过 MQ 或 CDC 异步更新，新商品写入数据库后，过滤器可能短时间还不知道这个 id。为了避免新商品被误判为“一定不存在”，可以在创建成功后写一个短 TTL 的旁路标记，例如 `recent_product:{id}`。查询时如果 Bloom Filter 判断不存在，可以先检查这个 recent-created 标记，命中则允许继续查 Redis/DB。后台预览、刚发布数据或管理端也可以按业务绕过 Bloom Filter。
+
+Bloom Filter 的 bit 位数和 hash 函数个数要按容量和误判率设计。先估算元素数量 `n` 和可接受误判率 `p`，再计算 `m = -(n * ln p) / (ln 2)^2` 和 `k = (m / n) * ln 2`。例如 1000 万商品 id、1% 误判率，大约需要 11.4 MB bit 数组和 7 个 hash。误判率越低，内存和 CPU 成本越高。
 
 ### 4. 结合限流和风控
 
@@ -314,6 +320,9 @@ null marker 能挡住重复空查询，但 TTL 不能太长。否则某个商品
 - 把 Bloom Filter 的“可能存在”当成“一定存在”。
 - 参数校验太晚，非法请求已经消耗了 Redis 和 DB 资源。
 - 对空结果和真实结果使用同样长 TTL。
+- 随机不存在 ID 都写 null marker，导致 Redis 被空值缓存污染。
+- Bloom Filter 异步更新没有 recent-created 兜底，新商品短时间被误判为不存在。
+- Bloom Filter 容量按当前数据量估算，没有考虑增长，误判率随着数据增加而升高。
 
 ## 完整案例：随机商品 ID 扫描
 
@@ -346,8 +355,11 @@ flowchart TD
 - 缓存穿透和缓存击穿、缓存雪崩有什么区别？
 - 为什么不存在数据也需要缓存？
 - null marker TTL 应该如何设置？
+- 如何避免 null marker 污染 Redis？
 - Bloom Filter 的“可能存在”和“一定不存在”分别意味着什么？
+- Bloom Filter 的 bit 位数和 hash 函数个数如何按容量和误判率估算？
 - 商品新增、删除时 Bloom Filter 如何维护？
+- Bloom Filter 异步更新时，如何避免新商品短时间查不到？
 - 哪些指标能发现缓存穿透？
 - 参数校验、限流和风控在穿透治理里分别起什么作用？
 

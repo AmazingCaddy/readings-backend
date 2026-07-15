@@ -16,6 +16,8 @@ const sidebars = {
         'study/lessons/database-locks',
         'study/lessons/pagination',
         'study/lessons/cache-aside',
+        'study/lessons/cache-breakdown',
+        'study/lessons/cache-penetration',
       ],
     },
     {

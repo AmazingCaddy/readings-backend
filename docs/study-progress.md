@@ -76,6 +76,8 @@ title: 我的后端学习档案
 | [第六课：数据库锁](./study/lessons/06-database-locks.md) | [数据库锁](./database/database-locks.md) | 已复盘 | 掌握行锁等待、长事务、死锁、固定锁顺序和批量更新锁等待排查 |
 | [第七课：分页优化](./study/lessons/07-pagination.md) | [分页优化](./database/pagination.md) | 已复盘 | 掌握 OFFSET 深分页、稳定排序、cursor pagination、组合索引和导出分页改造 |
 | [第八课：Cache-Aside 模式](./study/lessons/08-cache-aside.md) | [Cache-Aside 模式](./cache/cache-aside.md) | 已复盘 | 掌握缓存读路径、写后删缓存、TTL、空值缓存、回源保护和一致性边界 |
+| [第九课：Redis 缓存击穿](./study/lessons/09-cache-breakdown.md) | [Redis 缓存击穿](./cache/cache-breakdown.md) | 已复盘 | 掌握热点 key 击穿、互斥回源、逻辑过期、热点 key 更新策略和监控指标 |
+| [第十课：缓存穿透](./study/lessons/10-cache-penetration.md) | [缓存穿透](./cache/cache-penetration.md) | 已复盘 | 掌握不存在数据、空值缓存、布隆过滤器、参数校验、风控限流和 Bloom 维护边界 |
 
 ## 实战项目计划
 
@@ -128,7 +130,9 @@ title: 我的后端学习档案
 | 2026-07-14 | 学习数据库锁 | 完成行锁等待、长事务、死锁、固定锁顺序、锁等待与连接池等待关系、批量更新锁范围排查复盘 | 下一课建议学习数据库分页，或进入缓存专题 |
 | 2026-07-14 | 学习分页优化 | 完成 OFFSET 深分页、稳定排序、cursor pagination、组合索引、导出分页和产品取舍复盘 | 下一课建议进入缓存专题 Cache-Aside |
 | 2026-07-14 | 学习 Cache-Aside 模式 | 完成缓存读路径、写后删缓存、TTL、空值缓存、Redis 故障回源保护和适用边界复盘 | 下一课建议学习缓存击穿 |
+| 2026-07-15 | 学习 Redis 缓存击穿 | 完成热点 key 失效、互斥回源、逻辑过期、热点 key 更新策略和击穿监控复盘，并反哺原文 | 下一课建议学习缓存穿透 |
+| 2026-07-15 | 学习缓存穿透 | 完成不存在数据、空值缓存、随机 ID 防护、Bloom Filter 原理和维护边界复盘，并反哺原文 | 下一课建议学习缓存雪崩 |
 
 ## 下一步
 
-下一课建议进入 [缓存击穿](./cache/cache-breakdown.md)，继续学习热点 key 失效时如何保护数据库；也可以先把 Cache-Aside 整理成一版面试讲稿。
+下一课建议进入 [缓存雪崩](./cache/cache-avalanche.md)，继续学习大量 key 同时失效或 Redis 整体不可用时如何保护数据库。
